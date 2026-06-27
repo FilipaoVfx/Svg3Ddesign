@@ -1,0 +1,27 @@
+{
+  "name": "svg3d-examples",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@filipaovfx/svg3d": "file:..",
+    "react": "^19",
+    "react-dom": "^19",
+    "three": "^0.183.2",
+    "@react-three/fiber": "^9.5.0",
+    "@react-three/drei": "^10.7.7",
+    "3dsvg": "^0.2.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/three": "^0.183.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5",
+    "vite": "^6"
+  }
+}
