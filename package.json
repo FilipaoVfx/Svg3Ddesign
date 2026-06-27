@@ -1,0 +1,44 @@
+{
+  "name": "@filipaovfx/svg3d",
+  "version": "0.1.0",
+  "description": "Opinionated SVG/text → 3D React component for CrackingWall, built on 3dsvg.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "prepare": "npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=19",
+    "react-dom": ">=19",
+    "three": ">=0.160.0",
+    "@react-three/fiber": ">=9",
+    "@react-three/drei": ">=10",
+    "3dsvg": ">=0.2.0"
+  },
+  "devDependencies": {
+    "react": "^19",
+    "react-dom": "^19",
+    "three": "^0.183.2",
+    "@react-three/fiber": "^9.5.0",
+    "@react-three/drei": "^10.7.7",
+    "3dsvg": "^0.2.1",
+    "@types/react": "^19",
+    "@types/three": "^0.183.1",
+    "tsup": "^8",
+    "typescript": "^5"
+  }
+}
