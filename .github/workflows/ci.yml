@@ -16,8 +16,13 @@ jobs:
       - run: npm install
       - run: npm run typecheck
       - run: npm run build
-      - name: Publish to npm (on tag)
+      - name: Publish to npm (on tag, if NPM_TOKEN is set)
         if: startsWith(github.ref, 'refs/tags/v')
-        run: npm publish --access public
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN not set — skipping publish (tag still serves as a release marker)."
+            exit 0
+          fi
+          npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
