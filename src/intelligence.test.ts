@@ -64,11 +64,18 @@ describe('analyzeSvg', () => {
     expect(p.withinBudget).toBe(true);
   });
 
-  it('falls back to a single layer with a warning when there are no groups', () => {
-    const p2 = analyzeSvg('<svg viewBox="0 0 10 10"><path/><path/></svg>');
+  it('segments per shape when there are no <g id> groups (icon mode)', () => {
+    const p2 = analyzeSvg('<svg viewBox="0 0 10 10"><circle fill="#ff0000"/><rect fill="#00ff00"/></svg>');
+    expect(p2.layerCount).toBe(2);
+    expect(p2.layers.map((l) => l.id)).toEqual(['shape_0', 'shape_1']);
+    expect(p2.layers[0].fill).toBe('#ff0000');
+  });
+
+  it('ignores shapes inside <defs>/<mask>', () => {
+    const svg = '<svg><defs><path fill="#111"/></defs><mask><circle/></mask><rect fill="#222"/></svg>';
+    const p2 = analyzeSvg(svg);
     expect(p2.layerCount).toBe(1);
-    expect(p2.layers[0].id).toBe('root');
-    expect(p2.warnings.some((w) => /No <g id>/.test(w))).toBe(true);
+    expect(p2.layers[0].fill).toBe('#222');
   });
 });
 
@@ -113,11 +120,11 @@ describe('buildLayerSvgs + layerTransforms (#1/#3 foundation)', () => {
     expect(parts[0].svg).toContain('<g id="lens_glass"');
   });
 
-  it('z-stacks layers front-to-back (order 0 at front)', () => {
+  it('z-stacks layers back-to-front painter-style (order 0 at back, rising)', () => {
     const p = analyzeSvg(MOVING_HEAD);
     const t = layerTransforms(p);
     expect(t[0].z).toBe(0);
-    for (let i = 1; i < t.length; i++) expect(t[i].z).toBeLessThan(t[i - 1].z);
+    for (let i = 1; i < t.length; i++) expect(t[i].z).toBeGreaterThan(t[i - 1].z);
   });
 });
 

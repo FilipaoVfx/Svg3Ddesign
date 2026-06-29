@@ -139,9 +139,17 @@ function saturation(hex?: string): number {
 }
 
 /** Average the stop-colors of a gradient (or return a flat color) → hex. */
+const NAMED_COLORS: Record<string, string> = {
+  white: '#ffffff', black: '#000000', red: '#ff0000', green: '#008000', blue: '#0000ff',
+  yellow: '#ffff00', orange: '#ffa500', purple: '#800080', pink: '#ffc0cb', gray: '#808080',
+  grey: '#808080', silver: '#c0c0c0', gold: '#ffd700', cyan: '#00ffff', magenta: '#ff00ff',
+};
+
 export function resolveFillColor(fill: string | undefined, svg: string): string | undefined {
   if (!fill || fill === 'none') return undefined;
   if (/^#|^rgb/i.test(fill)) return fill;
+  const named = NAMED_COLORS[fill.toLowerCase()];
+  if (named) return named;
   const ref = fill.match(/url\(#([^)]+)\)/);
   if (!ref) return undefined;
   // Find the gradient element by id and average its stop-colors
@@ -205,23 +213,67 @@ export function estimateVertices(pathCount: number, curveSegments: number): numb
   return Math.round(pathCount * curveSegments * 8);
 }
 
-/**
- * Interpret an SVG string into an AssetProfile. If the SVG has no `<g id>`
- * groups it is treated as a single "unknown" layer (graceful fallback).
- */
-export function analyzeSvg(svg: string): AssetProfile {
-  const groups = topLevelGroups(svg).filter((g) => g.id || countDrawables(g.content) > 0);
+export type Granularity = 'auto' | 'group' | 'shape';
 
-  const layers: SvgLayer[] = groups.map((g, order) => {
-    const pathCount = countDrawables(g.content);
-    const rawFill = firstFill(g.attrs, g.content);
-    const opacity = detectOpacity(g.attrs, g.content, rawFill);
-    const fill = resolveFillColor(rawFill, svg); // resolve gradients → solid colour (#8)
-    let role = roleFromId(g.id);
-    if (role === 'unknown') role = roleFromFill(fill, opacity);
-    const spec = ROLE_SPEC[role];
-    return { id: g.id || `layer_${order}`, order, pathCount, fill, opacity, role, ...spec };
-  });
+/** Remove non-rendered regions so we only see visible drawables. */
+function stripNonRender(svg: string): string {
+  return svg
+    .replace(/<defs[\s\S]*?<\/defs>/gi, '')
+    .replace(/<mask[\s\S]*?<\/mask>/gi, '')
+    .replace(/<clipPath[\s\S]*?<\/clipPath>/gi, '');
+}
+
+const DRAWABLE_TAG = /<(path|circle|rect|ellipse|polygon|polyline|line)\b([^>]*)>/gi;
+
+/** Each individual drawable as its own element (fine granularity). */
+export function extractShapes(svg: string): { id: string; attrs: string; fill?: string }[] {
+  const body = stripNonRender(svg);
+  const out: { id: string; attrs: string; fill?: string }[] = [];
+  let m: RegExpExecArray | null;
+  DRAWABLE_TAG.lastIndex = 0;
+  while ((m = DRAWABLE_TAG.exec(body))) {
+    const attrs = m[2] || '';
+    out.push({ id: (attrs.match(/id="([^"]+)"/) || [])[1] || '', attrs, fill: (attrs.match(/fill="([^"]+)"/) || [])[1] });
+  }
+  return out;
+}
+
+/** Use authored groups when they have ids; otherwise fall to per-shape (icons). */
+export function pickGranularity(svg: string): 'group' | 'shape' {
+  return topLevelGroups(svg).some((g) => g.id) ? 'group' : 'shape';
+}
+
+/**
+ * Interpret an SVG string into an AssetProfile. Granularity 'auto' uses the
+ * authored `<g id>` groups when present, else segments per individual shape
+ * (best for icons — captures every element).
+ */
+export function analyzeSvg(svg: string, opts?: { granularity?: Granularity }): AssetProfile {
+  const mode = !opts?.granularity || opts.granularity === 'auto' ? pickGranularity(svg) : opts.granularity;
+
+  let layers: SvgLayer[];
+  if (mode === 'shape') {
+    layers = extractShapes(svg).map((s, order) => {
+      const opacity = detectOpacity(s.attrs, '', s.fill);
+      const fill = resolveFillColor(s.fill, svg);
+      let role = roleFromId(s.id);
+      if (role === 'unknown') role = roleFromFill(fill, opacity);
+      const spec = ROLE_SPEC[role];
+      return { id: s.id || `shape_${order}`, order, pathCount: 1, fill, opacity, role, ...spec };
+    });
+  } else {
+    const groups = topLevelGroups(svg).filter((g) => g.id || countDrawables(g.content) > 0);
+    layers = groups.map((g, order) => {
+      const pathCount = countDrawables(g.content);
+      const rawFill = firstFill(g.attrs, g.content);
+      const opacity = detectOpacity(g.attrs, g.content, rawFill);
+      const fill = resolveFillColor(rawFill, svg);
+      let role = roleFromId(g.id);
+      if (role === 'unknown') role = roleFromFill(fill, opacity);
+      const spec = ROLE_SPEC[role];
+      return { id: g.id || `layer_${order}`, order, pathCount, fill, opacity, role, ...spec };
+    });
+  }
 
   if (layers.length === 0) {
     const pathCount = countDrawables(svg);
@@ -272,14 +324,16 @@ export function buildLayerSvgs(svg: string): { id: string; svg: string }[] {
 }
 
 /**
- * Z offset per layer for depth stacking (#3): order 0 sits at the front (z=0),
- * each subsequent layer is pushed back behind the previous one's thickness.
- * `gap` adds extra spacing (>0 → exploded view).
+ * Z offset per layer using the painter's model (#3): SVG draw order = stacking
+ * height, so the first element sits at the back (z=0) and each later element is
+ * pushed FORWARD (toward the camera) above the previous one — e.g. a face base
+ * stays behind while eyes/nose/mouth rise as relief in front. `gap` adds extra
+ * spacing (>0 → exploded view).
  */
 export function layerTransforms(profile: AssetProfile, gap = 0): { id: string; z: number }[] {
   let z = 0;
   return profile.layers.map((l, i) => {
-    if (i > 0) z -= profile.layers[i - 1].depth / 2 + l.depth / 2 + gap;
+    if (i > 0) z += profile.layers[i - 1].depth / 2 + l.depth / 2 + gap;
     return { id: l.id, z };
   });
 }

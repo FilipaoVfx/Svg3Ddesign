@@ -1,6 +1,6 @@
 {
   "name": "@filipaovfx/svg3d",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Opinionated SVG/text → 3D React component for CrackingWall, built on 3dsvg.",
   "license": "MIT",
   "type": "module",

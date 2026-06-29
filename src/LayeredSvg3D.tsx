@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
 import { Canvas } from '@react-three/fiber';
 import { Environment, ContactShadows, OrbitControls } from '@react-three/drei';
-import { analyzeSvg, layerTransforms } from './intelligence';
+import { analyzeSvg, layerTransforms, pickGranularity } from './intelligence';
 import { SCENE_PRESETS, type SceneName } from './scenes';
 import type { MaterialPreset } from './types';
 
@@ -61,8 +61,22 @@ function buildModel(svg: string, gap: number, overrides: LayeredSvg3DProps['over
   const specById = new Map(profile.layers.map((l) => [l.id, l]));
   const zById = new Map(layerTransforms(profile, gap).map((t) => [t.id, t.z]));
 
+  const mode = pickGranularity(svg);
   const parsed = new SVGLoader().parse(svg);
-  const maxDim = Math.max(1, ...parsed.paths.flatMap((p) => {
+
+  // Skip non-rendered paths (inside <defs>/<mask>/<clipPath>)
+  const isHidden = (node: Element | null): boolean => {
+    let n: Element | null = node;
+    while (n) {
+      const t = n.tagName?.toLowerCase();
+      if (t === 'defs' || t === 'mask' || t === 'clippath') return true;
+      n = n.parentElement;
+    }
+    return false;
+  };
+  const renderPaths = parsed.paths.filter((p) => !isHidden((p.userData as { node?: Element })?.node ?? null));
+
+  const maxDim = Math.max(1, ...renderPaths.flatMap((p) => {
     const box = new THREE.Box2();
     p.subPaths.forEach((sp) => sp.getPoints().forEach((pt) => box.expandByPoint(pt)));
     const s = new THREE.Vector2();
@@ -71,18 +85,27 @@ function buildModel(svg: string, gap: number, overrides: LayeredSvg3DProps['over
   }));
   const depthScale = maxDim * 0.004;
 
-  // Group SVGLoader shapes by their top-level <g id>
-  const byLayer = new Map<string, THREE.Shape[]>();
-  for (const path of parsed.paths) {
-    const id = layerIdForNode((path.userData as { node?: Element })?.node ?? null) || 'root';
-    const shapes = SVGLoader.createShapes(path);
-    const arr = byLayer.get(id) ?? [];
-    arr.push(...shapes);
-    byLayer.set(id, arr);
+  // Segment into elements. 'shape' = one element per drawable (icons → captures
+  // every part: pupils, rings, teeth…); 'group' = by authored <g id>.
+  const elements: { id: string; shapes: THREE.Shape[] }[] = [];
+  if (mode === 'shape') {
+    renderPaths.forEach((path, i) => {
+      const node = (path.userData as { node?: Element })?.node ?? null;
+      elements.push({ id: node?.id || `shape_${i}`, shapes: SVGLoader.createShapes(path) });
+    });
+  } else {
+    const byLayer = new Map<string, THREE.Shape[]>();
+    for (const path of renderPaths) {
+      const id = layerIdForNode((path.userData as { node?: Element })?.node ?? null) || 'root';
+      const arr = byLayer.get(id) ?? [];
+      arr.push(...SVGLoader.createShapes(path));
+      byLayer.set(id, arr);
+    }
+    for (const [id, shapes] of byLayer) elements.push({ id, shapes });
   }
 
   const root = new THREE.Group();
-  for (const [id, shapes] of byLayer) {
+  for (const { id, shapes } of elements) {
     if (!shapes.length) continue;
     const layer = specById.get(id);
     const ov = overrides?.[id];
