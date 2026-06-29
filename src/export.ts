@@ -34,6 +34,43 @@ export async function exportCanvasPng(canvas: HTMLCanvasElement, filename = 'svg
   downloadBlob(blob, filename);
 }
 
+/**
+ * Export the 3D model to a binary glTF (.glb). Pass the scene captured via the
+ * `registerScene` prop on <Svg3D>. Exports the model group (the ExtrudeGeometry
+ * mesh and its transform) and skips lights / contact shadows.
+ *
+ * GLTFExporter is dynamically imported so it only loads when GLB is used.
+ */
+export async function exportSceneGlb(scene: unknown, filename = 'svg3d.glb'): Promise<void> {
+  const root = scene as { traverse: (cb: (o: any) => void) => void };
+  if (!root || typeof root.traverse !== 'function') {
+    throw new Error('No 3D scene available yet — try again once the model is visible.');
+  }
+
+  // Find the extruded model mesh, then climb to its top-level group under the scene.
+  let mesh: any = null;
+  root.traverse((o: any) => {
+    if (!mesh && o.isMesh && o.geometry?.type === 'ExtrudeGeometry') mesh = o;
+  });
+  if (!mesh) throw new Error('No 3D model to export yet.');
+
+  let target: any = mesh;
+  while (target.parent && target.parent !== root) target = target.parent;
+
+  const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
+  const exporter = new GLTFExporter();
+  const result = await new Promise<ArrayBuffer>((resolve, reject) => {
+    exporter.parse(
+      target,
+      (gltf) => resolve(gltf as ArrayBuffer),
+      (err) => reject(err),
+      { binary: true },
+    );
+  });
+
+  downloadBlob(new Blob([result], { type: 'model/gltf-binary' }), filename);
+}
+
 /** Strip scripts and inline event handlers from untrusted SVG markup. */
 export function sanitizeSvg(svg: string): string {
   return svg
