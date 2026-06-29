@@ -1,0 +1,150 @@
+import { useMemo } from 'react';
+import * as THREE from 'three';
+import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
+import { Canvas } from '@react-three/fiber';
+import { Environment, ContactShadows, OrbitControls } from '@react-three/drei';
+import { analyzeSvg, layerTransforms } from './intelligence';
+import { SCENE_PRESETS, type SceneName } from './scenes';
+import type { MaterialPreset } from './types';
+
+export interface LayeredSvg3DProps {
+  svg: string;
+  /** Extra spacing between layers (>0 → exploded view). */
+  gap?: number;
+  /** Scene preset; defaults to the one analyzeSvg recommends. */
+  scene?: SceneName;
+  /** Per-id overrides for depth/material (optional). */
+  overrides?: Record<string, { depth?: number; material?: MaterialPreset }>;
+  registerScene?: (scene: THREE.Scene) => void;
+  registerCanvas?: (canvas: HTMLCanvasElement) => void;
+}
+
+/** Build a Three material from a layer's material preset + fill colour. */
+function makeMaterial(preset: MaterialPreset, fill?: string): THREE.Material {
+  const color = new THREE.Color(fill && /^#?[0-9a-f]{3,8}$/i.test(fill) ? fill : '#c8ccd2');
+  switch (preset) {
+    case 'glass':
+      return new THREE.MeshPhysicalMaterial({ color, transmission: 1, thickness: 1.2, roughness: 0.06, ior: 1.5, transparent: true, metalness: 0 });
+    case 'metal':
+      return new THREE.MeshStandardMaterial({ color, metalness: 1, roughness: 0.28 });
+    case 'chrome':
+      return new THREE.MeshStandardMaterial({ color: new THREE.Color('#ffffff'), metalness: 1, roughness: 0.04 });
+    case 'gold':
+      return new THREE.MeshStandardMaterial({ color: new THREE.Color('#ffd24a'), metalness: 1, roughness: 0.2 });
+    case 'emissive':
+      return new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.4, roughness: 0.4 });
+    case 'plastic':
+      return new THREE.MeshStandardMaterial({ color, metalness: 0, roughness: 0.55 });
+    default:
+      return new THREE.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.45 });
+  }
+}
+
+/** Top-level <g id> for an SVGLoader path node (outermost id wins). */
+function layerIdForNode(node: Element | null): string {
+  let id = '';
+  let n: Element | null = node;
+  while (n) {
+    if (n.tagName?.toLowerCase() === 'g' && n.getAttribute('id')) id = n.getAttribute('id') || id;
+    n = n.parentElement;
+  }
+  return id;
+}
+
+/**
+ * Build one centered, scaled group with one extruded mesh per layer.
+ * Single parse → all layers share the SVG coordinate space, so they stay
+ * aligned; one global transform centers/scales the whole assembly.
+ */
+function buildModel(svg: string, gap: number, overrides: LayeredSvg3DProps['overrides']): THREE.Group {
+  const profile = analyzeSvg(svg);
+  const specById = new Map(profile.layers.map((l) => [l.id, l]));
+  const zById = new Map(layerTransforms(profile, gap).map((t) => [t.id, t.z]));
+
+  const parsed = new SVGLoader().parse(svg);
+  const maxDim = Math.max(1, ...parsed.paths.flatMap((p) => {
+    const box = new THREE.Box2();
+    p.subPaths.forEach((sp) => sp.getPoints().forEach((pt) => box.expandByPoint(pt)));
+    const s = new THREE.Vector2();
+    box.getSize(s);
+    return [s.x, s.y];
+  }));
+  const depthScale = maxDim * 0.004;
+
+  // Group SVGLoader shapes by their top-level <g id>
+  const byLayer = new Map<string, THREE.Shape[]>();
+  for (const path of parsed.paths) {
+    const id = layerIdForNode((path.userData as { node?: Element })?.node ?? null) || 'root';
+    const shapes = SVGLoader.createShapes(path);
+    const arr = byLayer.get(id) ?? [];
+    arr.push(...shapes);
+    byLayer.set(id, arr);
+  }
+
+  const root = new THREE.Group();
+  for (const [id, shapes] of byLayer) {
+    if (!shapes.length) continue;
+    const layer = specById.get(id);
+    const depth = (overrides?.[id]?.depth ?? layer?.depth ?? 20) * depthScale;
+    const material = makeMaterial(overrides?.[id]?.material ?? layer?.material ?? 'default', layer?.fill);
+    const geo = new THREE.ExtrudeGeometry(shapes, {
+      depth,
+      bevelEnabled: true,
+      bevelThickness: (layer?.bevel ?? 2) * depthScale * 0.4,
+      bevelSize: (layer?.bevel ?? 2) * depthScale * 0.4,
+      bevelSegments: profile.complexity === 'high' ? 2 : 4,
+      curveSegments: profile.recommended.curveSegments,
+    });
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.name = id;
+    mesh.position.z = (zById.get(id) ?? 0) * depthScale;
+    root.add(mesh);
+  }
+
+  // SVG y-down → three y-up
+  root.scale.y = -1;
+
+  // One global center + fit-to-view scale for the whole assembly
+  const box = new THREE.Box3().setFromObject(root);
+  const center = new THREE.Vector3();
+  const size = new THREE.Vector3();
+  box.getCenter(center);
+  box.getSize(size);
+  const fit = 4 / (Math.max(size.x, size.y, size.z) || 1);
+  const wrapper = new THREE.Group();
+  root.position.sub(center);
+  wrapper.add(root);
+  wrapper.scale.setScalar(fit);
+  return wrapper;
+}
+
+/**
+ * Layered SVG → 3D renderer: extrudes each `<g id>` layer at its own depth and
+ * material (from analyzeSvg or overrides), aligned and z-stacked. Client-only.
+ */
+export function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, registerCanvas }: LayeredSvg3DProps) {
+  const model = useMemo(() => buildModel(svg, gap, overrides), [svg, gap, overrides]);
+  const sceneName: SceneName = scene ?? analyzeSvg(svg).recommended.scene;
+  const preset = SCENE_PRESETS[sceneName];
+
+  return (
+    <Canvas
+      camera={{ position: [0, 0, 8], fov: 45 }}
+      gl={{ antialias: true, alpha: true, preserveDrawingBuffer: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: preset.exposure }}
+      onCreated={({ gl, scene: s }) => {
+        registerCanvas?.(gl.domElement);
+        registerScene?.(s);
+        if (preset.background !== 'transparent') s.background = new THREE.Color(preset.background);
+      }}
+    >
+      <ambientLight intensity={preset.ambientIntensity} />
+      <directionalLight position={preset.lightPosition} intensity={preset.lightIntensity} />
+      <directionalLight position={[-5, 3, -3]} intensity={0.4} />
+      <primitive object={model} />
+      <ContactShadows position={[0, -2.2, 0]} opacity={0.4} scale={10} blur={2} far={4} />
+      <Environment preset={preset.environment === 'neutral' ? 'studio' : preset.environment} environmentIntensity={1.2} />
+      <OrbitControls enablePan={false} />
+    </Canvas>
+  );
+}

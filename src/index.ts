@@ -1,4 +1,6 @@
 export { Svg3D } from './Svg3D';
+export { LayeredSvg3D } from './LayeredSvg3D';
+export type { LayeredSvg3DProps } from './LayeredSvg3D';
 export { PRESETS } from './presets';
 export { canvasToPngBlob, downloadBlob, exportCanvasPng, exportSceneGlb, sanitizeSvg, readSvgFile } from './export';
 export { analyzeSvg, buildLayerSvgs, layerTransforms, estimateVertices, topLevelGroups, VERTEX_BUDGET } from './intelligence';
