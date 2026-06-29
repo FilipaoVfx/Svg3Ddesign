@@ -5,6 +5,7 @@ import {
   layerTransforms,
   estimateVertices,
   topLevelGroups,
+  resolveFillColor,
 } from './intelligence';
 import { hashSvg, analyzeSvgCached } from './hash';
 
@@ -71,19 +72,26 @@ describe('analyzeSvg', () => {
   });
 });
 
-describe('fill-based material inference (#8)', () => {
+describe('fill handling (#8) + gradient colour capture', () => {
   it('treats translucent fills as glass', () => {
     const p = analyzeSvg('<svg><g id="part1" fill-opacity="0.3"><path/></g></svg>');
     expect(p.layers[0].role).toBe('glass');
   });
-  it('treats bright saturated fills as light/emissive', () => {
+  it('keeps coloured icon fills generic (matte) but captures the colour', () => {
     const p = analyzeSvg('<svg><g id="part2"><path fill="#00ffaa"/></g></svg>');
-    expect(p.layers[0].role).toBe('light');
-    expect(p.layers[0].material).toBe('emissive');
+    expect(p.layers[0].role).toBe('unknown'); // not auto-emissive
+    expect(p.layers[0].fill).toBe('#00ffaa');
   });
-  it('treats dark grey fills as metal', () => {
-    const p = analyzeSvg('<svg><g id="part3"><path fill="#1a1a1f"/></g></svg>');
-    expect(p.layers[0].role).toBe('metal');
+  it('resolves a gradient fill to an averaged solid colour', () => {
+    expect(resolveFillColor('#abcdef', '')).toBe('#abcdef');
+    const grad = '<radialGradient id="g1"><stop stop-color="#000000"/><stop stop-color="#ffffff"/></radialGradient>';
+    expect(resolveFillColor('url(#g1)', grad)).toBe('#808080');
+  });
+  it('captures a layer colour from a gradient reference', () => {
+    const svg = '<svg><defs><linearGradient id="grad"><stop stop-color="#ff0000"/><stop stop-color="#0000ff"/></linearGradient></defs>'
+      + '<g id="nose"><path fill="url(#grad)"/></g></svg>';
+    const p = analyzeSvg(svg);
+    expect(p.layers[0].fill).toBe('#800080');
   });
 });
 

@@ -13,8 +13,8 @@ export interface LayeredSvg3DProps {
   gap?: number;
   /** Scene preset; defaults to the one analyzeSvg recommends. */
   scene?: SceneName;
-  /** Per-id overrides for depth/material (optional). */
-  overrides?: Record<string, { depth?: number; material?: MaterialPreset }>;
+  /** Per-id overrides for sculpting each layer (optional). */
+  overrides?: Record<string, { depth?: number; material?: MaterialPreset; color?: string; visible?: boolean }>;
   registerScene?: (scene: THREE.Scene) => void;
   registerCanvas?: (canvas: HTMLCanvasElement) => void;
 }
@@ -85,8 +85,10 @@ function buildModel(svg: string, gap: number, overrides: LayeredSvg3DProps['over
   for (const [id, shapes] of byLayer) {
     if (!shapes.length) continue;
     const layer = specById.get(id);
-    const depth = (overrides?.[id]?.depth ?? layer?.depth ?? 20) * depthScale;
-    const material = makeMaterial(overrides?.[id]?.material ?? layer?.material ?? 'default', layer?.fill);
+    const ov = overrides?.[id];
+    if (ov?.visible === false) continue; // hidden layer
+    const depth = (ov?.depth ?? layer?.depth ?? 20) * depthScale;
+    const material = makeMaterial(ov?.material ?? layer?.material ?? 'default', ov?.color ?? layer?.fill);
     const geo = new THREE.ExtrudeGeometry(shapes, {
       depth,
       bevelEnabled: true,

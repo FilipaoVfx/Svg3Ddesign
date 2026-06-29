@@ -138,13 +138,39 @@ function saturation(hex?: string): number {
   return max === 0 ? 0 : (max - min) / max;
 }
 
-/** Material/role inference from the fill colour & opacity (used when id is ambiguous). */
-function roleFromFill(fill: string | undefined, opacity: number): LayerRole {
-  if (opacity < 0.6) return 'glass'; // translucent → glass
-  const b = brightness(fill);
-  const s = saturation(fill);
-  if (b !== null && b > 0.6 && s > 0.5) return 'light'; // bright + saturated → neon/emissive
-  if (b !== null && b < 0.25) return 'metal'; // dark grey → metal
+/** Average the stop-colors of a gradient (or return a flat color) → hex. */
+export function resolveFillColor(fill: string | undefined, svg: string): string | undefined {
+  if (!fill || fill === 'none') return undefined;
+  if (/^#|^rgb/i.test(fill)) return fill;
+  const ref = fill.match(/url\(#([^)]+)\)/);
+  if (!ref) return undefined;
+  // Find the gradient element by id and average its stop-colors
+  const re = new RegExp(`<(?:radial|linear)Gradient[^>]*id="${ref[1]}"[\\s\\S]*?</(?:radial|linear)Gradient>`);
+  const grad = svg.match(re)?.[0];
+  if (!grad) return undefined;
+  const stops = [...grad.matchAll(/stop-color="(#[0-9a-f]{3,8}|rgb[^"]+)"/gi)].map((m) => m[1]);
+  if (!stops.length) return undefined;
+  let r = 0, g = 0, b = 0, n = 0;
+  for (const c of stops) {
+    const h = c.replace('#', '');
+    if (!/^[0-9a-f]{6}/i.test(h)) continue;
+    r += parseInt(h.slice(0, 2), 16);
+    g += parseInt(h.slice(2, 4), 16);
+    b += parseInt(h.slice(4, 6), 16);
+    n++;
+  }
+  if (!n) return undefined;
+  const hx = (v: number) => Math.round(v / n).toString(16).padStart(2, '0');
+  return `#${hx(r)}${hx(g)}${hx(b)}`;
+}
+
+/**
+ * Role inference from colour & opacity (fallback when id is ambiguous).
+ * Conservative for icon/cartoon assets: only translucency → glass; otherwise
+ * leave it generic so the element keeps its (matte) colour rather than glowing.
+ */
+function roleFromFill(_fill: string | undefined, opacity: number): LayerRole {
+  if (opacity < 0.6) return 'glass';
   return 'unknown';
 }
 
@@ -188,10 +214,11 @@ export function analyzeSvg(svg: string): AssetProfile {
 
   const layers: SvgLayer[] = groups.map((g, order) => {
     const pathCount = countDrawables(g.content);
-    const fill = firstFill(g.attrs, g.content);
-    const opacity = detectOpacity(g.attrs, g.content, fill);
+    const rawFill = firstFill(g.attrs, g.content);
+    const opacity = detectOpacity(g.attrs, g.content, rawFill);
+    const fill = resolveFillColor(rawFill, svg); // resolve gradients → solid colour (#8)
     let role = roleFromId(g.id);
-    if (role === 'unknown') role = roleFromFill(fill, opacity); // #8: fill-based fallback
+    if (role === 'unknown') role = roleFromFill(fill, opacity);
     const spec = ROLE_SPEC[role];
     return { id: g.id || `layer_${order}`, order, pathCount, fill, opacity, role, ...spec };
   });
