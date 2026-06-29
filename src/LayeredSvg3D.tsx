@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useState } from 'react';
 import * as THREE from 'three';
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
 import { Canvas } from '@react-three/fiber';
@@ -119,12 +119,41 @@ function buildModel(svg: string, gap: number, overrides: LayeredSvg3DProps['over
   return wrapper;
 }
 
+/** Free geometries/materials to avoid GPU memory leaks on rebuild/unmount. */
+function disposeGroup(group: THREE.Group | null): void {
+  group?.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (mesh.geometry) mesh.geometry.dispose();
+    const mat = mesh.material;
+    if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+    else if (mat) (mat as THREE.Material).dispose();
+  });
+}
+
 /**
  * Layered SVG → 3D renderer: extrudes each `<g id>` layer at its own depth and
  * material (from analyzeSvg or overrides), aligned and z-stacked. Client-only.
  */
 export function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, registerCanvas }: LayeredSvg3DProps) {
-  const model = useMemo(() => buildModel(svg, gap, overrides), [svg, gap, overrides]);
+  // Build off the initial render so the canvas/controls paint first and a large
+  // SVG doesn't freeze the click→paint. (Geometry can't run in a Worker because
+  // SVGLoader needs the DOM; this keeps the first frame responsive.)
+  const [model, setModel] = useState<THREE.Group | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let built: THREE.Group | null = null;
+    const t = setTimeout(() => {
+      built = buildModel(svg, gap, overrides);
+      if (cancelled) disposeGroup(built);
+      else setModel(built);
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+      disposeGroup(built);
+    };
+  }, [svg, gap, overrides]);
+
   const sceneName: SceneName = scene ?? analyzeSvg(svg).recommended.scene;
   const preset = SCENE_PRESETS[sceneName];
 
@@ -142,7 +171,7 @@ export function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, re
       <directionalLight position={preset.lightPosition} intensity={preset.lightIntensity} />
       <directionalLight position={[-5, 3, -3]} intensity={0.4} />
       <hemisphereLight args={['#b1e1ff', '#b97a20', 0.5]} />
-      <primitive object={model} />
+      {model && <primitive object={model} />}
       <ContactShadows position={[0, -2.2, 0]} opacity={0.4} scale={10} blur={2} far={4} />
       {/* Self-contained environment (no network HDRI fetch) — mirrors the engine */}
       <Environment background={false} environmentIntensity={1.3} frames={1}>
