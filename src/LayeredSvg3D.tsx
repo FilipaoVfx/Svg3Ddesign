@@ -94,8 +94,11 @@ function buildModel(svg: string, gap: number, overrides: LayeredSvg3DProps['over
       bevelEnabled: true,
       bevelThickness: (layer?.bevel ?? 2) * depthScale * 0.4,
       bevelSize: (layer?.bevel ?? 2) * depthScale * 0.4,
-      bevelSegments: profile.complexity === 'high' ? 2 : 4,
-      curveSegments: profile.recommended.curveSegments,
+      // Cap segments hard: icon paths have many bezier curves, and curveSegments
+      // multiplies per curve. 10/2 keeps vertices low (60fps) with no visible
+      // loss at icon scale; bevel stays subtle.
+      bevelSegments: 2,
+      curveSegments: Math.min(profile.recommended.curveSegments, 10),
     });
     geo.computeVertexNormals();
     const mesh = new THREE.Mesh(geo, material);
