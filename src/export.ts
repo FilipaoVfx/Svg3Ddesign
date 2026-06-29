@@ -47,10 +47,12 @@ export async function exportSceneGlb(scene: unknown, filename = 'svg3d.glb'): Pr
     throw new Error('No 3D scene available yet — try again once the model is visible.');
   }
 
-  // Find the extruded model mesh, then climb to its top-level group under the scene.
+  // Find the model mesh, then climb to its top-level group under the scene.
+  // The engine merges the extrusion into a plain BufferGeometry, so we select
+  // by excluding the contact-shadow plane rather than matching ExtrudeGeometry.
   let mesh: any = null;
   root.traverse((o: any) => {
-    if (!mesh && o.isMesh && o.geometry?.type === 'ExtrudeGeometry') mesh = o;
+    if (!mesh && o.isMesh && o.geometry && o.geometry.type !== 'PlaneGeometry') mesh = o;
   });
   if (!mesh) throw new Error('No 3D model to export yet.');
 
