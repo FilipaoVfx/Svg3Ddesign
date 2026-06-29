@@ -1,6 +1,9 @@
 export { Svg3D } from './Svg3D';
 export { PRESETS } from './presets';
 export { canvasToPngBlob, downloadBlob, exportCanvasPng, exportSceneGlb, sanitizeSvg, readSvgFile } from './export';
-export { analyzeSvg } from './intelligence';
-export type { AssetProfile, SvgLayer, LayerRole } from './intelligence';
+export { analyzeSvg, buildLayerSvgs, layerTransforms, estimateVertices, topLevelGroups, VERTEX_BUDGET } from './intelligence';
+export type { AssetProfile, SvgLayer, LayerRole, RawGroup } from './intelligence';
+export { hashSvg, analyzeSvgCached, clearAnalysisCache } from './hash';
+export { SCENE_PRESETS } from './scenes';
+export type { SceneName, ScenePreset } from './scenes';
 export type { Svg3DProps, SVG3DProps, MaterialPreset, PresetName } from './types';
