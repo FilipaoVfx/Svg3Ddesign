@@ -141,9 +141,24 @@ export function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, re
       <ambientLight intensity={preset.ambientIntensity} />
       <directionalLight position={preset.lightPosition} intensity={preset.lightIntensity} />
       <directionalLight position={[-5, 3, -3]} intensity={0.4} />
+      <hemisphereLight args={['#b1e1ff', '#b97a20', 0.5]} />
       <primitive object={model} />
       <ContactShadows position={[0, -2.2, 0]} opacity={0.4} scale={10} blur={2} far={4} />
-      <Environment preset={preset.environment === 'neutral' ? 'studio' : preset.environment} environmentIntensity={1.2} />
+      {/* Self-contained environment (no network HDRI fetch) — mirrors the engine */}
+      <Environment background={false} environmentIntensity={1.3} frames={1}>
+        <mesh scale={50}>
+          <sphereGeometry args={[1, 32, 32]} />
+          <meshBasicMaterial color="#0a0a12" side={THREE.BackSide} />
+        </mesh>
+        <mesh position={[0, 25, 0]}>
+          <sphereGeometry args={[20, 32, 32]} />
+          <meshBasicMaterial color="#ffffff" />
+        </mesh>
+        <mesh position={[0, 0, 30]}>
+          <sphereGeometry args={[15, 32, 32]} />
+          <meshBasicMaterial color="#444444" />
+        </mesh>
+      </Environment>
       <OrbitControls enablePan={false} />
     </Canvas>
   );
