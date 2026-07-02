@@ -131,8 +131,16 @@ high-LOD, nunca en viewport (conflicto con C2).
     cambió; material/color se intercambian, visibility es un flag O(1) y el
     restack de z se recalcula; el rebuild completo queda solo para cambio de
     SVG. Phase 2 COMPLETA.
-- **Phase 3:** Gradient Intelligence (normal maps C7), Topology avanzada,
-  Material/Color Intelligence ampliados, cache de meshes, LOD.
+- **Phase 3 (en curso):**
+  - ✅ Gradient Intelligence v1 (v0.13.0, C7): `extractGradient` (puro,
+    worker-safe — linear/radial, stops %/style, 1 salto href, unidades
+    bbox/userSpace) + `makeGradientTextures` (main thread): el gradiente REAL
+    como textura de color alineada al bbox de la capa + normal map derivado
+    de su luminancia (Sobel) → relieve visual a ~0 geometría. Override de
+    color del usuario = color plano (se descarta el map). Fallback: hex
+    promediado (SSR/sin DOM → null, nunca rompe).
+  - ⏳ Topology avanzada · Material/Color Intelligence ampliados · cache de
+    meshes · LOD.
 - **Phase 4:** Playground avanzado (jerarquía, transform, lighting, animation
   presets), Scene Generator completo, export poster/GLTF.
 - **Phase 5:** AI opt-in (C1): semantic asset recognition + presets inteligentes.

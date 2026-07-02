@@ -9,6 +9,10 @@ export type { AssetProfile, SvgLayer, LayerRole, RawGroup, Granularity } from '.
 export { hashSvg, analyzeSvgCached, clearAnalysisCache } from './hash';
 export { shapeBBox, pathBBox, overlaps, contains, assignLevels } from './spatial';
 export type { BBox } from './spatial';
+export { extractGradient } from './gradients';
+export type { GradientSpec, GradientStop } from './gradients';
+export { makeGradientTextures } from './gradientTextures';
+export type { GradientTextures } from './gradientTextures';
 export { SCENE_PRESETS } from './scenes';
 export type { SceneName, ScenePreset } from './scenes';
 export type { Svg3DProps, SVG3DProps, MaterialPreset, PresetName } from './types';

@@ -5,6 +5,7 @@ import { Canvas } from '@react-three/fiber';
 import { Environment, ContactShadows, OrbitControls } from '@react-three/drei';
 import { layerTransforms, pickGranularity, applyOverrides, type AssetProfile, type SvgLayer } from './intelligence';
 import { analyzeSvgAsync } from './analysisWorker';
+import { makeGradientTextures, type GradientTextures } from './gradientTextures';
 import { SCENE_PRESETS, type SceneName } from './scenes';
 import type { MaterialPreset } from './types';
 
@@ -22,24 +23,32 @@ export interface LayeredSvg3DProps {
 
 type Overrides = LayeredSvg3DProps['overrides'];
 
-/** Build a Three material from a layer's material preset + fill colour. */
-function makeMaterial(preset: MaterialPreset, fill?: string): THREE.Material {
+/**
+ * Build a Three material from a layer's material preset + fill colour.
+ * When gradient textures exist (Module 5), the REAL gradient becomes the color
+ * map (base color → white to avoid tinting) and its luminance-derived normal
+ * map adds relief shading at ~zero geometry cost (C7).
+ */
+function makeMaterial(preset: MaterialPreset, fill?: string, textures?: GradientTextures | null): THREE.Material {
   const color = new THREE.Color(fill && /^#?[0-9a-f]{3,8}$/i.test(fill) ? fill : '#c8ccd2');
+  const grad = textures
+    ? { color: new THREE.Color('#ffffff'), map: textures.map, normalMap: textures.normalMap, normalScale: new THREE.Vector2(0.6, 0.6) }
+    : {};
   switch (preset) {
     case 'glass':
-      return new THREE.MeshPhysicalMaterial({ color, transmission: 1, thickness: 1.2, roughness: 0.06, ior: 1.5, transparent: true, metalness: 0 });
+      return new THREE.MeshPhysicalMaterial({ color, transmission: 1, thickness: 1.2, roughness: 0.06, ior: 1.5, transparent: true, metalness: 0, ...grad });
     case 'metal':
-      return new THREE.MeshStandardMaterial({ color, metalness: 1, roughness: 0.28 });
+      return new THREE.MeshStandardMaterial({ color, metalness: 1, roughness: 0.28, ...grad });
     case 'chrome':
-      return new THREE.MeshStandardMaterial({ color: new THREE.Color('#ffffff'), metalness: 1, roughness: 0.04 });
+      return new THREE.MeshStandardMaterial({ color: new THREE.Color('#ffffff'), metalness: 1, roughness: 0.04, ...grad });
     case 'gold':
       return new THREE.MeshStandardMaterial({ color: new THREE.Color('#ffd24a'), metalness: 1, roughness: 0.2 });
     case 'emissive':
-      return new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.4, roughness: 0.4 });
+      return new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.4, roughness: 0.4, ...grad });
     case 'plastic':
-      return new THREE.MeshStandardMaterial({ color, metalness: 0, roughness: 0.55 });
+      return new THREE.MeshStandardMaterial({ color, metalness: 0, roughness: 0.55, ...grad });
     default:
-      return new THREE.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.45 });
+      return new THREE.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.45, ...grad });
   }
 }
 
@@ -58,6 +67,8 @@ interface BuiltLayer {
   mesh: THREE.Mesh;
   shapes: THREE.Shape[];
   spec?: SvgLayer;
+  /** Gradient color/normal textures (built once per layer, reused on material swaps). */
+  textures?: GradientTextures | null;
 }
 
 interface BuiltModel {
@@ -149,7 +160,10 @@ function buildModel(svg: string, gap: number, overrides: Overrides, profile: Ass
     const ov = overrides?.[id];
     const depth = ov?.depth ?? layer?.depth ?? 20;
     const bevel = layer?.bevel ?? 2;
-    const material = makeMaterial(ov?.material ?? layer?.material ?? 'default', ov?.color ?? layer?.fill);
+    // Real gradient → color texture + luminance normal map (Module 5). A user
+    // color override means "flat color" → skip the gradient map.
+    const textures = layer?.gradient && layer.bbox && !ov?.color ? makeGradientTextures(layer.gradient, layer.bbox) : null;
+    const material = makeMaterial(ov?.material ?? layer?.material ?? 'default', ov?.color ?? layer?.fill, textures);
     const mesh = new THREE.Mesh(extrude(shapes, depth, bevel, depthScale, curveSegments), material);
     mesh.name = id;
     mesh.position.z = (zById.get(id) ?? 0) * depthScale;
@@ -157,7 +171,7 @@ function buildModel(svg: string, gap: number, overrides: Overrides, profile: Ass
     // is an O(1) flag flip instead of a rebuild (Smart Regeneration).
     mesh.visible = ov?.visible !== false;
     root.add(mesh);
-    byId.set(id, { mesh, shapes, spec: layer });
+    byId.set(id, { mesh, shapes, spec: layer, textures });
   }
 
   // SVG y-down → three y-up
@@ -210,7 +224,9 @@ function applyGranular(built: BuiltModel, overrides: Overrides, gap: number): vo
     const nextColor = next?.color ?? spec?.fill;
     if (nextMat !== prevMat || nextColor !== prevColor) {
       (mesh.material as THREE.Material).dispose();
-      mesh.material = makeMaterial(nextMat, nextColor);
+      // Color override → flat color (drop the gradient map); otherwise keep
+      // the layer's gradient textures across material swaps.
+      mesh.material = makeMaterial(nextMat, nextColor, next?.color ? null : entry.textures);
     }
 
     mesh.position.z = (zById.get(id) ?? 0) * built.depthScale;
@@ -219,14 +235,18 @@ function applyGranular(built: BuiltModel, overrides: Overrides, gap: number): vo
   built.applied = { overrides, gap };
 }
 
-/** Free geometries/materials to avoid GPU memory leaks on rebuild/unmount. */
+/** Free geometries/materials/textures to avoid GPU memory leaks on rebuild/unmount. */
 function disposeGroup(group: THREE.Group | null): void {
   group?.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (mesh.geometry) mesh.geometry.dispose();
-    const mat = mesh.material;
-    if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-    else if (mat) (mat as THREE.Material).dispose();
+    const mats = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
+    for (const m of mats) {
+      const std = m as THREE.MeshStandardMaterial;
+      std.map?.dispose();
+      std.normalMap?.dispose();
+      m.dispose();
+    }
   });
 }
 

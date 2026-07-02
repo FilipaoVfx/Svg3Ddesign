@@ -11,6 +11,7 @@
 import type { MaterialPreset } from './types';
 import type { SceneName } from './scenes';
 import { shapeBBox, assignLevels, type BBox } from './spatial';
+import { extractGradient, type GradientSpec } from './gradients';
 
 export type LayerRole =
   | 'glass'
@@ -41,6 +42,11 @@ export interface SvgLayer {
    * level. Absent in group granularity (painter stacking applies).
    */
   level?: number;
+  /**
+   * Real gradient definition when the fill is a gradient reference (Module 5).
+   * `fill` still carries the averaged hex as a flat fallback color.
+   */
+  gradient?: GradientSpec | null;
 }
 
 export interface AssetProfile {
@@ -302,6 +308,7 @@ export function analyzeSvg(svg: string, opts?: { granularity?: Granularity }): A
         ...spec,
         bbox: bboxes[order],
         level: levels[order],
+        gradient: extractGradient(s.fill, svg),
       };
     });
   } else {
@@ -314,7 +321,7 @@ export function analyzeSvg(svg: string, opts?: { granularity?: Granularity }): A
       let role = roleFromId(g.id);
       if (role === 'unknown') role = roleFromFill(fill, opacity);
       const spec = ROLE_SPEC[role];
-      return { id: g.id || `layer_${order}`, order, pathCount, fill, opacity, role, ...spec };
+      return { id: g.id || `layer_${order}`, order, pathCount, fill, opacity, role, ...spec, gradient: extractGradient(rawFill, svg) };
     });
   }
 
