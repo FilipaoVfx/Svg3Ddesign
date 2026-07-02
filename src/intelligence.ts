@@ -10,6 +10,7 @@
 
 import type { MaterialPreset } from './types';
 import type { SceneName } from './scenes';
+import { shapeBBox, assignLevels, type BBox } from './spatial';
 
 export type LayerRole =
   | 'glass'
@@ -32,6 +33,14 @@ export interface SvgLayer {
   material: MaterialPreset;
   depth: number;
   bevel: number;
+  /** Conservative bounding box in SVG coords (shape granularity only). */
+  bbox?: BBox | null;
+  /**
+   * Depth-graph level (Spatial Reconstruction v1): 0 = base; overlapping
+   * elements stack a level above what they cover; disjoint siblings share a
+   * level. Absent in group granularity (painter stacking applies).
+   */
+  level?: number;
 }
 
 export interface AssetProfile {
@@ -226,14 +235,19 @@ function stripNonRender(svg: string): string {
 const DRAWABLE_TAG = /<(path|circle|rect|ellipse|polygon|polyline|line)\b([^>]*)>/gi;
 
 /** Each individual drawable as its own element (fine granularity). */
-export function extractShapes(svg: string): { id: string; attrs: string; fill?: string }[] {
+export function extractShapes(svg: string): { id: string; tag: string; attrs: string; fill?: string }[] {
   const body = stripNonRender(svg);
-  const out: { id: string; attrs: string; fill?: string }[] = [];
+  const out: { id: string; tag: string; attrs: string; fill?: string }[] = [];
   let m: RegExpExecArray | null;
   DRAWABLE_TAG.lastIndex = 0;
   while ((m = DRAWABLE_TAG.exec(body))) {
     const attrs = m[2] || '';
-    out.push({ id: (attrs.match(/id="([^"]+)"/) || [])[1] || '', attrs, fill: (attrs.match(/fill="([^"]+)"/) || [])[1] });
+    out.push({
+      id: (attrs.match(/id="([^"]+)"/) || [])[1] || '',
+      tag: m[1].toLowerCase(),
+      attrs,
+      fill: (attrs.match(/fill="([^"]+)"/) || [])[1],
+    });
   }
   return out;
 }
@@ -253,13 +267,28 @@ export function analyzeSvg(svg: string, opts?: { granularity?: Granularity }): A
 
   let layers: SvgLayer[];
   if (mode === 'shape') {
-    layers = extractShapes(svg).map((s, order) => {
+    const shapes = extractShapes(svg);
+    // Spatial Reconstruction v1 (C3): bboxes → hybrid depth graph. Disjoint
+    // siblings share a level; overlaps stack by paint order.
+    const bboxes = shapes.map((s) => shapeBBox(s.tag, s.attrs));
+    const levels = assignLevels(bboxes);
+    layers = shapes.map((s, order) => {
       const opacity = detectOpacity(s.attrs, '', s.fill);
       const fill = resolveFillColor(s.fill, svg);
       let role = roleFromId(s.id);
       if (role === 'unknown') role = roleFromFill(fill, opacity);
       const spec = ROLE_SPEC[role];
-      return { id: s.id || `shape_${order}`, order, pathCount: 1, fill, opacity, role, ...spec };
+      return {
+        id: s.id || `shape_${order}`,
+        order,
+        pathCount: 1,
+        fill,
+        opacity,
+        role,
+        ...spec,
+        bbox: bboxes[order],
+        level: levels[order],
+      };
     });
   } else {
     const groups = topLevelGroups(svg).filter((g) => g.id || countDrawables(g.content) > 0);
@@ -324,13 +353,35 @@ export function buildLayerSvgs(svg: string): { id: string; svg: string }[] {
 }
 
 /**
- * Z offset per layer using the painter's model (#3): SVG draw order = stacking
- * height, so the first element sits at the back (z=0) and each later element is
- * pushed FORWARD (toward the camera) above the previous one — e.g. a face base
- * stays behind while eyes/nose/mouth rise as relief in front. `gap` adds extra
- * spacing (>0 → exploded view).
+ * Z offset per layer.
+ *
+ * With Spatial Reconstruction levels (shape granularity): layers stack by
+ * depth-graph LEVEL, so disjoint siblings (two eyes, two ears) share a height
+ * and only true overlaps rise — paint order stays the prior for ties (C3).
+ *
+ * Without levels (group granularity / fallback): the painter's model — SVG
+ * draw order = stacking height, each later element pushed forward above the
+ * previous one. `gap` adds extra spacing (>0 → exploded view).
  */
 export function layerTransforms(profile: AssetProfile, gap = 0): { id: string; z: number }[] {
+  const hasLevels = profile.layers.length > 0 && profile.layers.every((l) => typeof l.level === 'number');
+
+  if (hasLevels) {
+    // Tallest layer at each level defines that level's slab thickness.
+    const maxDepthAt: number[] = [];
+    for (const l of profile.layers) {
+      const lv = l.level as number;
+      maxDepthAt[lv] = Math.max(maxDepthAt[lv] ?? 0, l.depth);
+    }
+    const zAt: number[] = [];
+    let z = 0;
+    for (let lv = 0; lv < maxDepthAt.length; lv++) {
+      if (lv > 0) z += (maxDepthAt[lv - 1] ?? 0) / 2 + (maxDepthAt[lv] ?? 0) / 2 + gap;
+      zAt[lv] = z;
+    }
+    return profile.layers.map((l) => ({ id: l.id, z: zAt[l.level as number] }));
+  }
+
   let z = 0;
   return profile.layers.map((l, i) => {
     if (i > 0) z += profile.layers[i - 1].depth / 2 + l.depth / 2 + gap;
