@@ -49,6 +49,8 @@ export interface AssetProfile {
   complexity: 'low' | 'medium' | 'high';
   /** Rough estimate of extruded vertices (advisory, not exact). */
   estimatedVertices: number;
+  /** Rough estimate of extruded triangles (advisory) — official budget unit (C2). */
+  estimatedTriangles: number;
   withinBudget: boolean;
   layers: SvgLayer[];
   recommended: {
@@ -59,8 +61,11 @@ export interface AssetProfile {
   warnings: string[];
 }
 
-/** Max extruded vertices target (PRD geometry budget). */
+/** @deprecated Legacy vertex target — the official budget unit is triangles (C2). */
 export const VERTEX_BUDGET = 300_000;
+
+/** Official geometry budget in triangles (PRD v2.1, C2). */
+export const TRIANGLE_BUDGET = { desktop: 250_000, mobile: 80_000 } as const;
 
 const DRAWABLE = /<(path|rect|circle|ellipse|polygon|polyline|line)\b/g;
 
@@ -222,6 +227,15 @@ export function estimateVertices(pathCount: number, curveSegments: number): numb
   return Math.round(pathCount * curveSegments * 8);
 }
 
+/**
+ * Rough triangle estimate (advisory) — official budget unit (C2). Extrusion
+ * yields ~2 cap fans + wall quads (2 tris each) + bevel rings per contour
+ * point; ≈1.5 triangles per emitted vertex at icon scale.
+ */
+export function estimateTriangles(pathCount: number, curveSegments: number): number {
+  return Math.round(estimateVertices(pathCount, curveSegments) * 1.5);
+}
+
 export type Granularity = 'auto' | 'group' | 'shape';
 
 /** Remove non-rendered regions so we only see visible drawables. */
@@ -313,7 +327,8 @@ export function analyzeSvg(svg: string, opts?: { granularity?: Granularity }): A
   const complexity = pathCountTotal < 30 ? 'low' : pathCountTotal < 120 ? 'medium' : 'high';
   const curveSegments = complexity === 'high' ? 24 : 32;
   const estimatedVertices = estimateVertices(pathCountTotal, curveSegments);
-  const withinBudget = estimatedVertices <= VERTEX_BUDGET;
+  const estimatedTriangles = estimateTriangles(pathCountTotal, curveSegments);
+  const withinBudget = estimatedTriangles <= TRIANGLE_BUDGET.desktop;
 
   const depths = layers.map((l) => l.depth);
   const roles = new Set(layers.map((l) => l.role));
@@ -324,7 +339,7 @@ export function analyzeSvg(svg: string, opts?: { granularity?: Granularity }): A
       : 'minimal';
 
   const warnings: string[] = [];
-  if (!withinBudget) warnings.push(`Estimated ~${estimatedVertices.toLocaleString()} verts exceeds the ${VERTEX_BUDGET.toLocaleString()} budget — lower curveSegments or simplify paths.`);
+  if (!withinBudget) warnings.push(`Estimated ~${estimatedTriangles.toLocaleString()} triangles exceeds the ${TRIANGLE_BUDGET.desktop.toLocaleString()} desktop budget — lower curveSegments or simplify paths.`);
   if (pathCountTotal > 300) warnings.push('High path count (>300): keep curveSegments low for 60fps.');
   if (!layers.some((l) => l.id && l.id !== 'root')) warnings.push('No <g id> layers found — extrusion will be uniform. Author the SVG with depth groups for higher fidelity.');
   if (layers.length > 24) warnings.push('Many layers (>24): consider merging for fewer draw calls.');
@@ -334,11 +349,32 @@ export function analyzeSvg(svg: string, opts?: { granularity?: Granularity }): A
     pathCountTotal,
     complexity,
     estimatedVertices,
+    estimatedTriangles,
     withinBudget,
     layers,
     recommended: { scene, depthRange: [Math.min(...depths), Math.max(...depths)], curveSegments },
     warnings,
   };
+}
+
+/**
+ * New profile with sculpt overrides applied to layer depths, so that
+ * `layerTransforms` restacks correctly when the user changes a layer's depth
+ * (previously the meshes changed but the z-offsets used the original depths).
+ */
+export function applyOverrides(
+  profile: AssetProfile,
+  overrides?: Record<string, { depth?: number }>,
+): AssetProfile {
+  if (!overrides) return profile;
+  let changed = false;
+  const layers = profile.layers.map((l) => {
+    const d = overrides[l.id]?.depth;
+    if (d === undefined || d === l.depth) return l;
+    changed = true;
+    return { ...l, depth: d };
+  });
+  return changed ? { ...profile, layers } : profile;
 }
 
 /** Per-layer standalone SVGs (each `<g>` wrapped with the root viewBox). */

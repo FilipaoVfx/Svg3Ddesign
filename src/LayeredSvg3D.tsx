@@ -3,7 +3,8 @@ import * as THREE from 'three';
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
 import { Canvas } from '@react-three/fiber';
 import { Environment, ContactShadows, OrbitControls } from '@react-three/drei';
-import { analyzeSvg, layerTransforms, pickGranularity } from './intelligence';
+import { layerTransforms, pickGranularity, applyOverrides, type AssetProfile } from './intelligence';
+import { analyzeSvgAsync } from './analysisWorker';
 import { SCENE_PRESETS, type SceneName } from './scenes';
 import type { MaterialPreset } from './types';
 
@@ -56,10 +57,11 @@ function layerIdForNode(node: Element | null): string {
  * Single parse → all layers share the SVG coordinate space, so they stay
  * aligned; one global transform centers/scales the whole assembly.
  */
-function buildModel(svg: string, gap: number, overrides: LayeredSvg3DProps['overrides']): THREE.Group {
-  const profile = analyzeSvg(svg);
+function buildModel(svg: string, gap: number, overrides: LayeredSvg3DProps['overrides'], profile: AssetProfile): THREE.Group {
   const specById = new Map(profile.layers.map((l) => [l.id, l]));
-  const zById = new Map(layerTransforms(profile, gap).map((t) => [t.id, t.z]));
+  // Stacking uses EFFECTIVE depths (sculpt overrides applied) so changing a
+  // layer's depth restacks the levels above it instead of overlapping.
+  const zById = new Map(layerTransforms(applyOverrides(profile, overrides), gap).map((t) => [t.id, t.z]));
 
   const mode = pickGranularity(svg);
   const parsed = new SVGLoader().parse(svg);
@@ -163,15 +165,27 @@ function disposeGroup(group: THREE.Group | null): void {
  * material (from analyzeSvg or overrides), aligned and z-stacked. Client-only.
  */
 export function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, registerCanvas }: LayeredSvg3DProps) {
-  // Build off the initial render so the canvas/controls paint first and a large
-  // SVG doesn't freeze the click→paint. (Geometry can't run in a Worker because
-  // SVGLoader needs the DOM; this keeps the first frame responsive.)
+  // Analysis runs OFF the main thread (Analysis Worker, C6) with a sync
+  // fallback; geometry stays on main (SVGLoader needs the DOM) but is deferred
+  // past first paint so the canvas/controls stay responsive.
+  const [profile, setProfile] = useState<AssetProfile | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    analyzeSvgAsync(svg).then((p) => {
+      if (!cancelled) setProfile(p);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [svg]);
+
   const [model, setModel] = useState<THREE.Group | null>(null);
   useEffect(() => {
+    if (!profile) return;
     let cancelled = false;
     let built: THREE.Group | null = null;
     const t = setTimeout(() => {
-      built = buildModel(svg, gap, overrides);
+      built = buildModel(svg, gap, overrides, profile);
       if (cancelled) disposeGroup(built);
       else setModel(built);
     }, 0);
@@ -180,9 +194,9 @@ export function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, re
       clearTimeout(t);
       disposeGroup(built);
     };
-  }, [svg, gap, overrides]);
+  }, [svg, gap, overrides, profile]);
 
-  const sceneName: SceneName = scene ?? analyzeSvg(svg).recommended.scene;
+  const sceneName: SceneName = scene ?? profile?.recommended.scene ?? 'studio';
   const preset = SCENE_PRESETS[sceneName];
 
   return (

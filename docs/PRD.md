@@ -115,9 +115,18 @@ high-LOD, nunca en viewport (conflicto con C2).
 
 - **Phase 1 — ✅ hecha (v0.1–v0.9):** parser core, geometry engine, GLB export,
   per-shape granularity, painter z-order, presets, budget advisory, cache hash.
-- **Phase 2 (en curso, rama `3dlab`):** Spatial Reconstruction v1 heurística
-  (bboxes + contención/solape + paint-order prior → Depth Graph), Workers (C6),
-  Smart Regeneration granular, migración del estimador a triángulos (C2).
+- **Phase 2 (en curso, rama `3dlab`):**
+  - ✅ Spatial Reconstruction v1 (v0.10.0): bboxes + contención/solape +
+    paint-order prior → Depth Graph híbrido (`spatial.ts`, `level` por capa).
+  - ✅ Workers C6 (v0.11.0): `analysis.worker` (bundle autocontenido) +
+    `analyzeSvgAsync` con caché por hash y fallback sync (SSR/CSP/legacy);
+    `LayeredSvg3D` analiza off-main-thread. Geometría queda en main
+    (SVGLoader necesita DOM — según reparto C6).
+  - ✅ Estimador en triángulos C2 (v0.11.0): `estimatedTriangles` +
+    `TRIANGLE_BUDGET` {250k/80k}; `withinBudget` ahora es por triángulos.
+  - ✅ Fix de restacking al esculpir: `applyOverrides` — cambiar el depth de
+    una capa re-apila los niveles superiores (antes solo cambiaba la malla).
+  - ⏳ Smart Regeneration granular (rebuild solo de la capa editada).
 - **Phase 3:** Gradient Intelligence (normal maps C7), Topology avanzada,
   Material/Color Intelligence ampliados, cache de meshes, LOD.
 - **Phase 4:** Playground avanzado (jerarquía, transform, lighting, animation
