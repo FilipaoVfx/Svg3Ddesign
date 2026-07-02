@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
 import { Canvas } from '@react-three/fiber';
 import { Environment, ContactShadows, OrbitControls } from '@react-three/drei';
-import { layerTransforms, pickGranularity, applyOverrides, type AssetProfile } from './intelligence';
+import { layerTransforms, pickGranularity, applyOverrides, type AssetProfile, type SvgLayer } from './intelligence';
 import { analyzeSvgAsync } from './analysisWorker';
 import { SCENE_PRESETS, type SceneName } from './scenes';
 import type { MaterialPreset } from './types';
@@ -19,6 +19,8 @@ export interface LayeredSvg3DProps {
   registerScene?: (scene: THREE.Scene) => void;
   registerCanvas?: (canvas: HTMLCanvasElement) => void;
 }
+
+type Overrides = LayeredSvg3DProps['overrides'];
 
 /** Build a Three material from a layer's material preset + fill colour. */
 function makeMaterial(preset: MaterialPreset, fill?: string): THREE.Material {
@@ -52,12 +54,44 @@ function layerIdForNode(node: Element | null): string {
   return id;
 }
 
+interface BuiltLayer {
+  mesh: THREE.Mesh;
+  shapes: THREE.Shape[];
+  spec?: SvgLayer;
+}
+
+interface BuiltModel {
+  wrapper: THREE.Group;
+  byId: Map<string, BuiltLayer>;
+  profile: AssetProfile;
+  depthScale: number;
+  curveSegments: number;
+  /** Overrides/gap already applied to the meshes (diff base for updates). */
+  applied: { overrides?: Overrides; gap: number };
+}
+
+function extrude(shapes: THREE.Shape[], depth: number, bevel: number, depthScale: number, curveSegments: number): THREE.ExtrudeGeometry {
+  const geo = new THREE.ExtrudeGeometry(shapes, {
+    depth: depth * depthScale,
+    bevelEnabled: true,
+    bevelThickness: bevel * depthScale * 0.4,
+    bevelSize: bevel * depthScale * 0.4,
+    // Cap segments hard: icon paths have many bezier curves, and curveSegments
+    // multiplies per curve. 10/2 keeps vertices low (60fps) with no visible
+    // loss at icon scale; bevel stays subtle.
+    bevelSegments: 2,
+    curveSegments,
+  });
+  geo.computeVertexNormals();
+  return geo;
+}
+
 /**
  * Build one centered, scaled group with one extruded mesh per layer.
  * Single parse → all layers share the SVG coordinate space, so they stay
  * aligned; one global transform centers/scales the whole assembly.
  */
-function buildModel(svg: string, gap: number, overrides: LayeredSvg3DProps['overrides'], profile: AssetProfile): THREE.Group {
+function buildModel(svg: string, gap: number, overrides: Overrides, profile: AssetProfile): BuiltModel {
   const specById = new Map(profile.layers.map((l) => [l.id, l]));
   // Stacking uses EFFECTIVE depths (sculpt overrides applied) so changing a
   // layer's depth restacks the levels above it instead of overlapping.
@@ -86,6 +120,7 @@ function buildModel(svg: string, gap: number, overrides: LayeredSvg3DProps['over
     return [s.x, s.y];
   }));
   const depthScale = maxDim * 0.004;
+  const curveSegments = Math.min(profile.recommended.curveSegments, 10);
 
   // Segment into elements. 'shape' = one element per drawable (icons → captures
   // every part: pupils, rings, teeth…); 'group' = by authored <g id>.
@@ -107,29 +142,22 @@ function buildModel(svg: string, gap: number, overrides: LayeredSvg3DProps['over
   }
 
   const root = new THREE.Group();
+  const byId = new Map<string, BuiltLayer>();
   for (const { id, shapes } of elements) {
     if (!shapes.length) continue;
     const layer = specById.get(id);
     const ov = overrides?.[id];
-    if (ov?.visible === false) continue; // hidden layer
-    const depth = (ov?.depth ?? layer?.depth ?? 20) * depthScale;
+    const depth = ov?.depth ?? layer?.depth ?? 20;
+    const bevel = layer?.bevel ?? 2;
     const material = makeMaterial(ov?.material ?? layer?.material ?? 'default', ov?.color ?? layer?.fill);
-    const geo = new THREE.ExtrudeGeometry(shapes, {
-      depth,
-      bevelEnabled: true,
-      bevelThickness: (layer?.bevel ?? 2) * depthScale * 0.4,
-      bevelSize: (layer?.bevel ?? 2) * depthScale * 0.4,
-      // Cap segments hard: icon paths have many bezier curves, and curveSegments
-      // multiplies per curve. 10/2 keeps vertices low (60fps) with no visible
-      // loss at icon scale; bevel stays subtle.
-      bevelSegments: 2,
-      curveSegments: Math.min(profile.recommended.curveSegments, 10),
-    });
-    geo.computeVertexNormals();
-    const mesh = new THREE.Mesh(geo, material);
+    const mesh = new THREE.Mesh(extrude(shapes, depth, bevel, depthScale, curveSegments), material);
     mesh.name = id;
     mesh.position.z = (zById.get(id) ?? 0) * depthScale;
+    // Hidden layers are built but not rendered, so toggling visibility later
+    // is an O(1) flag flip instead of a rebuild (Smart Regeneration).
+    mesh.visible = ov?.visible !== false;
     root.add(mesh);
+    byId.set(id, { mesh, shapes, spec: layer });
   }
 
   // SVG y-down → three y-up
@@ -146,7 +174,49 @@ function buildModel(svg: string, gap: number, overrides: LayeredSvg3DProps['over
   root.position.sub(center);
   wrapper.add(root);
   wrapper.scale.setScalar(fit);
-  return wrapper;
+  return { wrapper, byId, profile, depthScale, curveSegments, applied: { overrides, gap } };
+}
+
+/**
+ * Smart Regeneration (PRD v2.1): apply an overrides/gap change to an existing
+ * built model IN PLACE — re-extrude only layers whose depth changed, swap only
+ * changed materials, flip visibility flags, and restack z positions. The
+ * global center/fit transform is intentionally kept stable while sculpting
+ * (no visual jumps).
+ */
+function applyGranular(built: BuiltModel, overrides: Overrides, gap: number): void {
+  const zById = new Map(layerTransforms(applyOverrides(built.profile, overrides), gap).map((t) => [t.id, t.z]));
+  const prevAll = built.applied.overrides;
+
+  for (const [id, entry] of built.byId) {
+    const { mesh, shapes, spec } = entry;
+    const prev = prevAll?.[id];
+    const next = overrides?.[id];
+
+    mesh.visible = next?.visible !== false;
+
+    const baseDepth = spec?.depth ?? 20;
+    const prevDepth = prev?.depth ?? baseDepth;
+    const nextDepth = next?.depth ?? baseDepth;
+    if (nextDepth !== prevDepth) {
+      const geo = extrude(shapes, nextDepth, spec?.bevel ?? 2, built.depthScale, built.curveSegments);
+      mesh.geometry.dispose();
+      mesh.geometry = geo;
+    }
+
+    const prevMat = prev?.material ?? spec?.material ?? 'default';
+    const nextMat = next?.material ?? spec?.material ?? 'default';
+    const prevColor = prev?.color ?? spec?.fill;
+    const nextColor = next?.color ?? spec?.fill;
+    if (nextMat !== prevMat || nextColor !== prevColor) {
+      (mesh.material as THREE.Material).dispose();
+      mesh.material = makeMaterial(nextMat, nextColor);
+    }
+
+    mesh.position.z = (zById.get(id) ?? 0) * built.depthScale;
+  }
+
+  built.applied = { overrides, gap };
 }
 
 /** Free geometries/materials to avoid GPU memory leaks on rebuild/unmount. */
@@ -179,22 +249,41 @@ export function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, re
     };
   }, [svg]);
 
+  // Latest sculpt state, readable from the deferred build without re-triggering it.
+  const editRef = useRef<{ overrides: Overrides; gap: number }>({ overrides, gap });
+  editRef.current = { overrides, gap };
+
+  // Full (re)build ONLY when the SVG/profile changes.
+  const builtRef = useRef<BuiltModel | null>(null);
   const [model, setModel] = useState<THREE.Group | null>(null);
   useEffect(() => {
     if (!profile) return;
     let cancelled = false;
-    let built: THREE.Group | null = null;
+    let built: BuiltModel | null = null;
     const t = setTimeout(() => {
-      built = buildModel(svg, gap, overrides, profile);
-      if (cancelled) disposeGroup(built);
-      else setModel(built);
+      built = buildModel(svg, editRef.current.gap, editRef.current.overrides, profile);
+      if (cancelled) {
+        disposeGroup(built.wrapper);
+      } else {
+        builtRef.current = built;
+        setModel(built.wrapper);
+      }
     }, 0);
     return () => {
       cancelled = true;
       clearTimeout(t);
-      disposeGroup(built);
+      if (built) disposeGroup(built.wrapper);
+      builtRef.current = null;
     };
-  }, [svg, gap, overrides, profile]);
+  }, [svg, profile]);
+
+  // Sculpt edits (overrides/gap) update the existing model in place — only the
+  // touched layer is re-extruded; material/visibility/z are O(changed layers).
+  useEffect(() => {
+    const built = builtRef.current;
+    if (!built || !model) return;
+    applyGranular(built, overrides, gap);
+  }, [overrides, gap, model]);
 
   const sceneName: SceneName = scene ?? profile?.recommended.scene ?? 'studio';
   const preset = SCENE_PRESETS[sceneName];

@@ -126,7 +126,11 @@ high-LOD, nunca en viewport (conflicto con C2).
     `TRIANGLE_BUDGET` {250k/80k}; `withinBudget` ahora es por triángulos.
   - ✅ Fix de restacking al esculpir: `applyOverrides` — cambiar el depth de
     una capa re-apila los niveles superiores (antes solo cambiaba la malla).
-  - ⏳ Smart Regeneration granular (rebuild solo de la capa editada).
+  - ✅ Smart Regeneration granular (v0.12.0): las ediciones de esculpido
+    actualizan el modelo IN PLACE — solo se re-extruye la capa cuyo depth
+    cambió; material/color se intercambian, visibility es un flag O(1) y el
+    restack de z se recalcula; el rebuild completo queda solo para cambio de
+    SVG. Phase 2 COMPLETA.
 - **Phase 3:** Gradient Intelligence (normal maps C7), Topology avanzada,
   Material/Color Intelligence ampliados, cache de meshes, LOD.
 - **Phase 4:** Playground avanzado (jerarquía, transform, lighting, animation
