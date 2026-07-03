@@ -139,8 +139,11 @@ high-LOD, nunca en viewport (conflicto con C2).
     de su luminancia (Sobel) → relieve visual a ~0 geometría. Override de
     color del usuario = color plano (se descarta el map). Fallback: hex
     promediado (SSR/sin DOM → null, nunca rompe).
-  - ⏳ Topology avanzada · Material/Color Intelligence ampliados · cache de
-    meshes · LOD.
+  - ✅ Geometry Cache (v0.14.0): LRU con reference-counting. Re-montar un SVG
+    o hacer scrubbing del slider de depth reutiliza la geometría extruida en
+    vez de re-triangular. Invariante: acquire/release; solo el cache dispone y
+    nunca evicta una entrada en uso (refs>0).
+  - ⏳ Topology avanzada · Material/Color Intelligence ampliados · LOD.
 - **Phase 4:** Playground avanzado (jerarquía, transform, lighting, animation
   presets), Scene Generator completo, export poster/GLTF.
 - **Phase 5:** AI opt-in (C1): semantic asset recognition + presets inteligentes.

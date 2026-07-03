@@ -345,4 +345,43 @@ interface GradientTextures {
  */
 declare function makeGradientTextures(spec: GradientSpec, bbox: BBox): GradientTextures | null;
 
-export { type AssetProfile, type BBox, type GradientSpec, type GradientStop, type GradientTextures, type Granularity, type LayerRole, LayeredSvg3D, type LayeredSvg3DProps, PRESETS, type PresetName, type RawGroup, SCENE_PRESETS, type SceneName, type ScenePreset, Svg3D, type Svg3DProps, type SvgLayer, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildLayerSvgs, canvasToPngBlob, clearAnalysisCache, contains, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportSceneGlb, extractGradient, extractShapes, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
+/**
+ * Geometry cache (PRD v2.1, Phase 3 — "Geometry Cache").
+ *
+ * A reference-counted LRU so re-mounting the same SVG or scrubbing a depth
+ * slider back to a previous value REUSES the extruded geometry instead of
+ * re-triangulating it. Extrusion (ExtrudeGeometry) is the heaviest step, so
+ * cache hits make those interactions instant.
+ *
+ * Safety invariant (avoids GPU leaks & disposed-geometry render errors):
+ *   - callers NEVER dispose a cached value directly — they `acquire`/`release`;
+ *   - only the cache disposes, and only on eviction of an entry with refs === 0.
+ * An in-use entry (refs > 0) is never evicted, so a live mesh can never end up
+ * pointing at a disposed geometry.
+ *
+ * The core is generic (no Three dependency) so it is unit-testable in Node;
+ * the exported `geometryCache` binds it to THREE.BufferGeometry.
+ */
+
+interface RefCache<V> {
+    /** Return the cached value for `key`, or create+store it. Increments refs. */
+    acquire(key: string, factory: () => V): V;
+    /** Signal a holder no longer needs `key`. Decrements refs (never below 0). */
+    release(key: string): void;
+    /** Current number of entries (in-use + idle). */
+    size(): number;
+    /** For diagnostics/tests. */
+    refs(key: string): number;
+    /** Dispose every entry (idle and in-use) and empty the cache. */
+    clear(): void;
+}
+declare function createRefCache<V>(opts: {
+    max: number;
+    dispose: (v: V) => void;
+}): RefCache<V>;
+/** Shared geometry cache for the renderer (bounded by entry count). */
+declare const geometryCache: RefCache<THREE.BufferGeometry>;
+/** Stable cache key for an extruded layer geometry (same shapes ⇒ same id per SVG). */
+declare function geoKey(svgHash: string, id: string, depth: number, bevel: number, curveSegments: number): string;
+
+export { type AssetProfile, type BBox, type GradientSpec, type GradientStop, type GradientTextures, type Granularity, type LayerRole, LayeredSvg3D, type LayeredSvg3DProps, PRESETS, type PresetName, type RawGroup, type RefCache, SCENE_PRESETS, type SceneName, type ScenePreset, Svg3D, type Svg3DProps, type SvgLayer, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildLayerSvgs, canvasToPngBlob, clearAnalysisCache, contains, createRefCache, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };

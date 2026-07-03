@@ -564,6 +564,59 @@ function disposeAnalysisWorker() {
   pending.clear();
   cache.clear();
 }
+
+// src/geometryCache.ts
+function createRefCache(opts) {
+  const { max, dispose } = opts;
+  const map = /* @__PURE__ */ new Map();
+  const touch = (key, entry) => {
+    map.delete(key);
+    map.set(key, entry);
+  };
+  const evictIfNeeded = () => {
+    if (map.size <= max) return;
+    for (const [k, e] of [...map]) {
+      if (map.size <= max) break;
+      if (e.refs === 0) {
+        dispose(e.value);
+        map.delete(k);
+      }
+    }
+  };
+  return {
+    acquire(key, factory) {
+      const hit = map.get(key);
+      if (hit) {
+        hit.refs++;
+        touch(key, hit);
+        return hit.value;
+      }
+      const value = factory();
+      map.set(key, { value, refs: 1 });
+      evictIfNeeded();
+      return value;
+    },
+    release(key) {
+      const e = map.get(key);
+      if (!e) return;
+      if (e.refs > 0) e.refs--;
+      evictIfNeeded();
+    },
+    size: () => map.size,
+    refs: (key) => map.get(key)?.refs ?? 0,
+    clear() {
+      for (const e of map.values()) dispose(e.value);
+      map.clear();
+    }
+  };
+}
+var geometryCache = createRefCache({
+  max: 96,
+  dispose: (g) => g.dispose()
+});
+function geoKey(svgHash, id, depth, bevel, curveSegments) {
+  return `${svgHash}|${id}|d${depth.toFixed(2)}|b${bevel}|c${curveSegments}`;
+}
 var SIZE = 128;
 function drawGradient(ctx, spec, toStop) {
   const [a, b, c, d] = spec.coords;
@@ -723,6 +776,7 @@ function extrude(shapes, depth, bevel, depthScale, curveSegments) {
   return geo;
 }
 function buildModel(svg, gap, overrides, profile) {
+  const svgHash = hashSvg(svg);
   const specById = new Map(profile.layers.map((l) => [l.id, l]));
   const zById = new Map(layerTransforms(applyOverrides(profile, overrides), gap).map((t) => [t.id, t.z]));
   const mode = pickGranularity(svg);
@@ -772,12 +826,14 @@ function buildModel(svg, gap, overrides, profile) {
     const bevel = layer?.bevel ?? 2;
     const textures = layer?.gradient && layer.bbox && !ov?.color ? makeGradientTextures(layer.gradient, layer.bbox) : null;
     const material = makeMaterial(ov?.material ?? layer?.material ?? "default", ov?.color ?? layer?.fill, textures);
-    const mesh = new THREE2.Mesh(extrude(shapes, depth, bevel, depthScale, curveSegments), material);
+    const key = geoKey(svgHash, id, depth, bevel, curveSegments);
+    const geometry = geometryCache.acquire(key, () => extrude(shapes, depth, bevel, depthScale, curveSegments));
+    const mesh = new THREE2.Mesh(geometry, material);
     mesh.name = id;
     mesh.position.z = (zById.get(id) ?? 0) * depthScale;
     mesh.visible = ov?.visible !== false;
     root.add(mesh);
-    byId.set(id, { mesh, shapes, spec: layer, textures });
+    byId.set(id, { mesh, shapes, spec: layer, textures, geoKey: key });
   }
   root.scale.y = -1;
   const box = new THREE2.Box3().setFromObject(root);
@@ -790,7 +846,7 @@ function buildModel(svg, gap, overrides, profile) {
   root.position.sub(center);
   wrapper.add(root);
   wrapper.scale.setScalar(fit);
-  return { wrapper, byId, profile, depthScale, curveSegments, applied: { overrides, gap } };
+  return { wrapper, byId, profile, svgHash, depthScale, curveSegments, applied: { overrides, gap } };
 }
 function applyGranular(built, overrides, gap) {
   const zById = new Map(layerTransforms(applyOverrides(built.profile, overrides), gap).map((t) => [t.id, t.z]));
@@ -801,12 +857,17 @@ function applyGranular(built, overrides, gap) {
     const next = overrides?.[id];
     mesh.visible = next?.visible !== false;
     const baseDepth = spec?.depth ?? 20;
+    const bevel = spec?.bevel ?? 2;
     const prevDepth = prev?.depth ?? baseDepth;
     const nextDepth = next?.depth ?? baseDepth;
     if (nextDepth !== prevDepth) {
-      const geo = extrude(shapes, nextDepth, spec?.bevel ?? 2, built.depthScale, built.curveSegments);
-      mesh.geometry.dispose();
-      mesh.geometry = geo;
+      const newKey = geoKey(built.svgHash, id, nextDepth, bevel, built.curveSegments);
+      if (newKey !== entry.geoKey) {
+        const geo = geometryCache.acquire(newKey, () => extrude(shapes, nextDepth, bevel, built.depthScale, built.curveSegments));
+        geometryCache.release(entry.geoKey);
+        mesh.geometry = geo;
+        entry.geoKey = newKey;
+      }
     }
     const prevMat = prev?.material ?? spec?.material ?? "default";
     const nextMat = next?.material ?? spec?.material ?? "default";
@@ -820,18 +881,15 @@ function applyGranular(built, overrides, gap) {
   }
   built.applied = { overrides, gap };
 }
-function disposeGroup(group) {
-  group?.traverse((o) => {
-    const mesh = o;
-    if (mesh.geometry) mesh.geometry.dispose();
-    const mats = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
-    for (const m of mats) {
-      const std = m;
-      std.map?.dispose();
-      std.normalMap?.dispose();
-      m.dispose();
-    }
-  });
+function disposeBuilt(built) {
+  if (!built) return;
+  for (const entry of built.byId.values()) {
+    geometryCache.release(entry.geoKey);
+    const mat = entry.mesh.material;
+    (Array.isArray(mat) ? mat : [mat]).forEach((m) => m?.dispose());
+    entry.textures?.map.dispose();
+    entry.textures?.normalMap.dispose();
+  }
 }
 function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, registerCanvas }) {
   const [profile, setProfile] = useState(null);
@@ -855,7 +913,7 @@ function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, registerC
     const t = setTimeout(() => {
       built = buildModel(svg, editRef.current.gap, editRef.current.overrides, profile);
       if (cancelled) {
-        disposeGroup(built.wrapper);
+        disposeBuilt(built);
       } else {
         builtRef.current = built;
         setModel(built.wrapper);
@@ -864,7 +922,7 @@ function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, registerC
     return () => {
       cancelled = true;
       clearTimeout(t);
-      if (built) disposeGroup(built.wrapper);
+      disposeBuilt(built);
       builtRef.current = null;
     };
   }, [svg, profile]);
@@ -970,6 +1028,6 @@ async function readSvgFile(file) {
   return sanitizeSvg(text);
 }
 
-export { LayeredSvg3D, PRESETS, SCENE_PRESETS, Svg3D, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildLayerSvgs, canvasToPngBlob, clearAnalysisCache, contains, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportSceneGlb, extractGradient, extractShapes, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
+export { LayeredSvg3D, PRESETS, SCENE_PRESETS, Svg3D, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildLayerSvgs, canvasToPngBlob, clearAnalysisCache, contains, createRefCache, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

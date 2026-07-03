@@ -5,6 +5,8 @@ import { Canvas } from '@react-three/fiber';
 import { Environment, ContactShadows, OrbitControls } from '@react-three/drei';
 import { layerTransforms, pickGranularity, applyOverrides, type AssetProfile, type SvgLayer } from './intelligence';
 import { analyzeSvgAsync } from './analysisWorker';
+import { hashSvg } from './hash';
+import { geometryCache, geoKey } from './geometryCache';
 import { makeGradientTextures, type GradientTextures } from './gradientTextures';
 import { SCENE_PRESETS, type SceneName } from './scenes';
 import type { MaterialPreset } from './types';
@@ -67,6 +69,8 @@ interface BuiltLayer {
   mesh: THREE.Mesh;
   shapes: THREE.Shape[];
   spec?: SvgLayer;
+  /** Current geometry cache key the mesh holds a reference to. */
+  geoKey: string;
   /** Gradient color/normal textures (built once per layer, reused on material swaps). */
   textures?: GradientTextures | null;
 }
@@ -75,6 +79,7 @@ interface BuiltModel {
   wrapper: THREE.Group;
   byId: Map<string, BuiltLayer>;
   profile: AssetProfile;
+  svgHash: string;
   depthScale: number;
   curveSegments: number;
   /** Overrides/gap already applied to the meshes (diff base for updates). */
@@ -103,6 +108,7 @@ function extrude(shapes: THREE.Shape[], depth: number, bevel: number, depthScale
  * aligned; one global transform centers/scales the whole assembly.
  */
 function buildModel(svg: string, gap: number, overrides: Overrides, profile: AssetProfile): BuiltModel {
+  const svgHash = hashSvg(svg);
   const specById = new Map(profile.layers.map((l) => [l.id, l]));
   // Stacking uses EFFECTIVE depths (sculpt overrides applied) so changing a
   // layer's depth restacks the levels above it instead of overlapping.
@@ -164,14 +170,18 @@ function buildModel(svg: string, gap: number, overrides: Overrides, profile: Ass
     // color override means "flat color" → skip the gradient map.
     const textures = layer?.gradient && layer.bbox && !ov?.color ? makeGradientTextures(layer.gradient, layer.bbox) : null;
     const material = makeMaterial(ov?.material ?? layer?.material ?? 'default', ov?.color ?? layer?.fill, textures);
-    const mesh = new THREE.Mesh(extrude(shapes, depth, bevel, depthScale, curveSegments), material);
+    // Geometry Cache: reuse the extruded geometry across re-mounts / depth
+    // scrubbing. The mesh borrows a reference; only the cache disposes.
+    const key = geoKey(svgHash, id, depth, bevel, curveSegments);
+    const geometry = geometryCache.acquire(key, () => extrude(shapes, depth, bevel, depthScale, curveSegments));
+    const mesh = new THREE.Mesh(geometry, material);
     mesh.name = id;
     mesh.position.z = (zById.get(id) ?? 0) * depthScale;
     // Hidden layers are built but not rendered, so toggling visibility later
     // is an O(1) flag flip instead of a rebuild (Smart Regeneration).
     mesh.visible = ov?.visible !== false;
     root.add(mesh);
-    byId.set(id, { mesh, shapes, spec: layer, textures });
+    byId.set(id, { mesh, shapes, spec: layer, textures, geoKey: key });
   }
 
   // SVG y-down → three y-up
@@ -188,7 +198,7 @@ function buildModel(svg: string, gap: number, overrides: Overrides, profile: Ass
   root.position.sub(center);
   wrapper.add(root);
   wrapper.scale.setScalar(fit);
-  return { wrapper, byId, profile, depthScale, curveSegments, applied: { overrides, gap } };
+  return { wrapper, byId, profile, svgHash, depthScale, curveSegments, applied: { overrides, gap } };
 }
 
 /**
@@ -210,12 +220,19 @@ function applyGranular(built: BuiltModel, overrides: Overrides, gap: number): vo
     mesh.visible = next?.visible !== false;
 
     const baseDepth = spec?.depth ?? 20;
+    const bevel = spec?.bevel ?? 2;
     const prevDepth = prev?.depth ?? baseDepth;
     const nextDepth = next?.depth ?? baseDepth;
     if (nextDepth !== prevDepth) {
-      const geo = extrude(shapes, nextDepth, spec?.bevel ?? 2, built.depthScale, built.curveSegments);
-      mesh.geometry.dispose();
-      mesh.geometry = geo;
+      const newKey = geoKey(built.svgHash, id, nextDepth, bevel, built.curveSegments);
+      if (newKey !== entry.geoKey) {
+        // Acquire the new geometry (cache hit when scrubbing back to a prior
+        // depth), then release the old ref. Never dispose directly.
+        const geo = geometryCache.acquire(newKey, () => extrude(shapes, nextDepth, bevel, built.depthScale, built.curveSegments));
+        geometryCache.release(entry.geoKey);
+        mesh.geometry = geo;
+        entry.geoKey = newKey;
+      }
     }
 
     const prevMat = prev?.material ?? spec?.material ?? 'default';
@@ -235,19 +252,21 @@ function applyGranular(built: BuiltModel, overrides: Overrides, gap: number): vo
   built.applied = { overrides, gap };
 }
 
-/** Free geometries/materials/textures to avoid GPU memory leaks on rebuild/unmount. */
-function disposeGroup(group: THREE.Group | null): void {
-  group?.traverse((o) => {
-    const mesh = o as THREE.Mesh;
-    if (mesh.geometry) mesh.geometry.dispose();
-    const mats = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : [];
-    for (const m of mats) {
-      const std = m as THREE.MeshStandardMaterial;
-      std.map?.dispose();
-      std.normalMap?.dispose();
-      m.dispose();
-    }
-  });
+/**
+ * Release a built model: return each layer's geometry reference to the cache
+ * (the cache owns geometry disposal) and dispose the per-mesh materials +
+ * gradient textures (those are NOT cached). Prevents GPU leaks without ever
+ * disposing a geometry that another live model might still be reusing.
+ */
+function disposeBuilt(built: BuiltModel | null): void {
+  if (!built) return;
+  for (const entry of built.byId.values()) {
+    geometryCache.release(entry.geoKey);
+    const mat = entry.mesh.material as THREE.Material | THREE.Material[];
+    (Array.isArray(mat) ? mat : [mat]).forEach((m) => m?.dispose());
+    entry.textures?.map.dispose();
+    entry.textures?.normalMap.dispose();
+  }
 }
 
 /**
@@ -283,7 +302,7 @@ export function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, re
     const t = setTimeout(() => {
       built = buildModel(svg, editRef.current.gap, editRef.current.overrides, profile);
       if (cancelled) {
-        disposeGroup(built.wrapper);
+        disposeBuilt(built);
       } else {
         builtRef.current = built;
         setModel(built.wrapper);
@@ -292,7 +311,7 @@ export function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, re
     return () => {
       cancelled = true;
       clearTimeout(t);
-      if (built) disposeGroup(built.wrapper);
+      disposeBuilt(built);
       builtRef.current = null;
     };
   }, [svg, profile]);
