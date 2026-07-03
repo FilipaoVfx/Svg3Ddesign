@@ -614,8 +614,35 @@ var geometryCache = createRefCache({
   max: 96,
   dispose: (g) => g.dispose()
 });
-function geoKey(svgHash, id, depth, bevel, curveSegments) {
-  return `${svgHash}|${id}|d${depth.toFixed(2)}|b${bevel}|c${curveSegments}`;
+function geoKey(svgHash, id, depth, bevel, curveSegments, bevelSegments) {
+  return `${svgHash}|${id}|d${depth.toFixed(2)}|b${bevel}|c${curveSegments}|s${bevelSegments}`;
+}
+
+// src/lod.ts
+var CEIL = {
+  desktop: { draft: { curve: 10, bevel: 2 }, high: { curve: 32, bevel: 3 } },
+  mobile: { draft: { curve: 6, bevel: 1 }, high: { curve: 16, bevel: 2 } }
+};
+var MIN_CURVE = 3;
+function chooseLod(profile, opts = {}) {
+  const quality = opts.quality ?? "draft";
+  const device = opts.isMobile ? "mobile" : "desktop";
+  const budget = opts.budget ?? (opts.isMobile ? TRIANGLE_BUDGET.mobile : TRIANGLE_BUDGET.desktop);
+  const ceil = CEIL[device][quality];
+  const ceilCurve = Math.min(profile.recommended.curveSegments, ceil.curve);
+  let curveSegments = ceilCurve;
+  while (curveSegments > MIN_CURVE && estimateTriangles(profile.pathCountTotal, curveSegments) > budget) {
+    curveSegments--;
+  }
+  return { curveSegments, bevelSegments: ceil.bevel, budget, reduced: curveSegments < ceilCurve };
+}
+function detectMobile() {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.matchMedia?.("(pointer: coarse)").matches || window.innerWidth < 768;
+  } catch {
+    return false;
+  }
 }
 var SIZE = 128;
 function drawGradient(ctx, spec, toStop) {
@@ -760,23 +787,24 @@ function layerIdForNode(node) {
   }
   return id;
 }
-function extrude(shapes, depth, bevel, depthScale, curveSegments) {
+function extrude(shapes, depth, bevel, depthScale, curveSegments, bevelSegments) {
   const geo = new THREE2.ExtrudeGeometry(shapes, {
     depth: depth * depthScale,
     bevelEnabled: true,
     bevelThickness: bevel * depthScale * 0.4,
     bevelSize: bevel * depthScale * 0.4,
-    // Cap segments hard: icon paths have many bezier curves, and curveSegments
-    // multiplies per curve. 10/2 keeps vertices low (60fps) with no visible
-    // loss at icon scale; bevel stays subtle.
-    bevelSegments: 2,
+    // curveSegments / bevelSegments come from the LOD selector (chooseLod):
+    // low in the draft viewport for 60fps, higher for export, and auto-reduced
+    // to fit the triangle budget on complex/mobile assets.
+    bevelSegments,
     curveSegments
   });
   geo.computeVertexNormals();
   return geo;
 }
-function buildModel(svg, gap, overrides, profile) {
+function buildModel(svg, gap, overrides, profile, quality) {
   const svgHash = hashSvg(svg);
+  const lod = chooseLod(profile, { quality, isMobile: detectMobile() });
   const specById = new Map(profile.layers.map((l) => [l.id, l]));
   const zById = new Map(layerTransforms(applyOverrides(profile, overrides), gap).map((t) => [t.id, t.z]));
   const mode = pickGranularity(svg);
@@ -799,7 +827,7 @@ function buildModel(svg, gap, overrides, profile) {
     return [s.x, s.y];
   }));
   const depthScale = maxDim * 4e-3;
-  const curveSegments = Math.min(profile.recommended.curveSegments, 10);
+  const { curveSegments, bevelSegments } = lod;
   const elements = [];
   if (mode === "shape") {
     renderPaths.forEach((path, i) => {
@@ -826,8 +854,8 @@ function buildModel(svg, gap, overrides, profile) {
     const bevel = layer?.bevel ?? 2;
     const textures = layer?.gradient && layer.bbox && !ov?.color ? makeGradientTextures(layer.gradient, layer.bbox) : null;
     const material = makeMaterial(ov?.material ?? layer?.material ?? "default", ov?.color ?? layer?.fill, textures);
-    const key = geoKey(svgHash, id, depth, bevel, curveSegments);
-    const geometry = geometryCache.acquire(key, () => extrude(shapes, depth, bevel, depthScale, curveSegments));
+    const key = geoKey(svgHash, id, depth, bevel, curveSegments, bevelSegments);
+    const geometry = geometryCache.acquire(key, () => extrude(shapes, depth, bevel, depthScale, curveSegments, bevelSegments));
     const mesh = new THREE2.Mesh(geometry, material);
     mesh.name = id;
     mesh.position.z = (zById.get(id) ?? 0) * depthScale;
@@ -846,7 +874,7 @@ function buildModel(svg, gap, overrides, profile) {
   root.position.sub(center);
   wrapper.add(root);
   wrapper.scale.setScalar(fit);
-  return { wrapper, byId, profile, svgHash, depthScale, curveSegments, applied: { overrides, gap } };
+  return { wrapper, byId, profile, svgHash, depthScale, curveSegments, bevelSegments, applied: { overrides, gap } };
 }
 function applyGranular(built, overrides, gap) {
   const zById = new Map(layerTransforms(applyOverrides(built.profile, overrides), gap).map((t) => [t.id, t.z]));
@@ -861,9 +889,9 @@ function applyGranular(built, overrides, gap) {
     const prevDepth = prev?.depth ?? baseDepth;
     const nextDepth = next?.depth ?? baseDepth;
     if (nextDepth !== prevDepth) {
-      const newKey = geoKey(built.svgHash, id, nextDepth, bevel, built.curveSegments);
+      const newKey = geoKey(built.svgHash, id, nextDepth, bevel, built.curveSegments, built.bevelSegments);
       if (newKey !== entry.geoKey) {
-        const geo = geometryCache.acquire(newKey, () => extrude(shapes, nextDepth, bevel, built.depthScale, built.curveSegments));
+        const geo = geometryCache.acquire(newKey, () => extrude(shapes, nextDepth, bevel, built.depthScale, built.curveSegments, built.bevelSegments));
         geometryCache.release(entry.geoKey);
         mesh.geometry = geo;
         entry.geoKey = newKey;
@@ -891,7 +919,7 @@ function disposeBuilt(built) {
     entry.textures?.normalMap.dispose();
   }
 }
-function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, registerCanvas }) {
+function LayeredSvg3D({ svg, gap = 0, scene, quality = "draft", overrides, registerScene, registerCanvas }) {
   const [profile, setProfile] = useState(null);
   useEffect(() => {
     let cancelled = false;
@@ -911,7 +939,7 @@ function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, registerC
     let cancelled = false;
     let built = null;
     const t = setTimeout(() => {
-      built = buildModel(svg, editRef.current.gap, editRef.current.overrides, profile);
+      built = buildModel(svg, editRef.current.gap, editRef.current.overrides, profile, quality);
       if (cancelled) {
         disposeBuilt(built);
       } else {
@@ -925,7 +953,7 @@ function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, registerC
       disposeBuilt(built);
       builtRef.current = null;
     };
-  }, [svg, profile]);
+  }, [svg, profile, quality]);
   useEffect(() => {
     const built = builtRef.current;
     if (!built || !model) return;
@@ -1028,6 +1056,6 @@ async function readSvgFile(file) {
   return sanitizeSvg(text);
 }
 
-export { LayeredSvg3D, PRESETS, SCENE_PRESETS, Svg3D, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildLayerSvgs, canvasToPngBlob, clearAnalysisCache, contains, createRefCache, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
+export { LayeredSvg3D, PRESETS, SCENE_PRESETS, Svg3D, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildLayerSvgs, canvasToPngBlob, chooseLod, clearAnalysisCache, contains, createRefCache, detectMobile, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

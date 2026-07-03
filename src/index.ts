@@ -15,6 +15,8 @@ export { makeGradientTextures } from './gradientTextures';
 export type { GradientTextures } from './gradientTextures';
 export { geometryCache, geoKey, createRefCache } from './geometryCache';
 export type { RefCache } from './geometryCache';
+export { chooseLod, detectMobile } from './lod';
+export type { Quality, LodOptions, LodResult } from './lod';
 export { SCENE_PRESETS } from './scenes';
 export type { SceneName, ScenePreset } from './scenes';
 export type { Svg3DProps, SVG3DProps, MaterialPreset, PresetName } from './types';

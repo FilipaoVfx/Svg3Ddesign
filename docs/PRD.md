@@ -143,7 +143,12 @@ high-LOD, nunca en viewport (conflicto con C2).
     o hacer scrubbing del slider de depth reutiliza la geometría extruida en
     vez de re-triangular. Invariante: acquire/release; solo el cache dispone y
     nunca evicta una entrada en uso (refs>0).
-  - ⏳ Topology avanzada · Material/Color Intelligence ampliados · LOD.
+  - ✅ LOD (v0.15.0): `chooseLod` (puro) elige curve/bevel segments por tier
+    ('draft' viewport low-poly / 'high' export) y **auto-reduce la subdivisión
+    para caber en el presupuesto de triángulos** (C2), con presupuesto y techos
+    menores en móvil (`detectMobile`). Prop `quality` en `<LayeredSvg3D>`
+    (default 'draft'); el geometry cache keyea por curve+bevelSegments.
+  - ⏳ Topology avanzada · Material/Color Intelligence ampliados · export high-LOD.
 - **Phase 4:** Playground avanzado (jerarquía, transform, lighting, animation
   presets), Scene Generator completo, export poster/GLTF.
 - **Phase 5:** AI opt-in (C1): semantic asset recognition + presets inteligentes.

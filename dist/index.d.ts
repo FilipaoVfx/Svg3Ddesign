@@ -21,6 +21,37 @@ interface Svg3DProps extends SVG3DProps {
  */
 declare function Svg3D({ preset, ...props }: Svg3DProps): react.JSX.Element;
 
+type Quality = 'draft' | 'high';
+interface LodOptions {
+    /** 'draft' (default) for interactive viewport, 'high' for export. */
+    quality?: Quality;
+    /** Use the mobile budget + lower ceilings. */
+    isMobile?: boolean;
+    /** Override the triangle budget (defaults to desktop/mobile per isMobile). */
+    budget?: number;
+}
+interface LodResult {
+    curveSegments: number;
+    bevelSegments: number;
+    /** Triangle budget used for the decision. */
+    budget: number;
+    /** True if we had to drop below the quality ceiling to fit the budget. */
+    reduced: boolean;
+}
+/**
+ * Choose curve/bevel segments for an asset. Starts at the quality ceiling for
+ * the device, then reduces curveSegments (down to MIN_CURVE) until the
+ * estimated triangles fit the budget.
+ */
+declare function chooseLod(profile: {
+    pathCountTotal: number;
+    recommended: {
+        curveSegments: number;
+    };
+}, opts?: LodOptions): LodResult;
+/** SSR-safe coarse-pointer / small-screen check for auto mobile LOD. */
+declare function detectMobile(): boolean;
+
 /**
  * Scene presets — lighting/environment configs that `analyzeSvg` recommends and
  * a renderer can apply. Plain data; no Three.js dependency.
@@ -45,6 +76,11 @@ interface LayeredSvg3DProps {
     gap?: number;
     /** Scene preset; defaults to the one analyzeSvg recommends. */
     scene?: SceneName;
+    /**
+     * Geometry LOD: 'draft' (default) = low-poly for a 60fps viewport;
+     * 'high' = crisp (for export). Both auto-reduce to fit the triangle budget.
+     */
+    quality?: Quality;
     /** Per-id overrides for sculpting each layer (optional). */
     overrides?: Record<string, {
         depth?: number;
@@ -59,7 +95,7 @@ interface LayeredSvg3DProps {
  * Layered SVG → 3D renderer: extrudes each `<g id>` layer at its own depth and
  * material (from analyzeSvg or overrides), aligned and z-stacked. Client-only.
  */
-declare function LayeredSvg3D({ svg, gap, scene, overrides, registerScene, registerCanvas }: LayeredSvg3DProps): react.JSX.Element;
+declare function LayeredSvg3D({ svg, gap, scene, quality, overrides, registerScene, registerCanvas }: LayeredSvg3DProps): react.JSX.Element;
 
 /** Curated CrackingWall looks (material + colour + light + motion). */
 declare const PRESETS: Record<PresetName, Partial<SVG3DProps>>;
@@ -382,6 +418,6 @@ declare function createRefCache<V>(opts: {
 /** Shared geometry cache for the renderer (bounded by entry count). */
 declare const geometryCache: RefCache<THREE.BufferGeometry>;
 /** Stable cache key for an extruded layer geometry (same shapes ⇒ same id per SVG). */
-declare function geoKey(svgHash: string, id: string, depth: number, bevel: number, curveSegments: number): string;
+declare function geoKey(svgHash: string, id: string, depth: number, bevel: number, curveSegments: number, bevelSegments: number): string;
 
-export { type AssetProfile, type BBox, type GradientSpec, type GradientStop, type GradientTextures, type Granularity, type LayerRole, LayeredSvg3D, type LayeredSvg3DProps, PRESETS, type PresetName, type RawGroup, type RefCache, SCENE_PRESETS, type SceneName, type ScenePreset, Svg3D, type Svg3DProps, type SvgLayer, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildLayerSvgs, canvasToPngBlob, clearAnalysisCache, contains, createRefCache, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
+export { type AssetProfile, type BBox, type GradientSpec, type GradientStop, type GradientTextures, type Granularity, type LayerRole, LayeredSvg3D, type LayeredSvg3DProps, type LodOptions, type LodResult, PRESETS, type PresetName, type Quality, type RawGroup, type RefCache, SCENE_PRESETS, type SceneName, type ScenePreset, Svg3D, type Svg3DProps, type SvgLayer, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildLayerSvgs, canvasToPngBlob, chooseLod, clearAnalysisCache, contains, createRefCache, detectMobile, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };

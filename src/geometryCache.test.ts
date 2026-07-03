@@ -84,9 +84,11 @@ describe('createRefCache — eviction (LRU, refs===0 only)', () => {
 
 describe('geoKey', () => {
   it('is stable and collapses depth micro-steps', () => {
-    expect(geoKey('abc', 'eye', 20, 2, 10)).toBe('abc|eye|d20.00|b2|c10');
-    expect(geoKey('abc', 'eye', 20.001, 2, 10)).toBe(geoKey('abc', 'eye', 20.004, 2, 10));
-    expect(geoKey('abc', 'eye', 20, 2, 10)).not.toBe(geoKey('abc', 'eye', 21, 2, 10));
-    expect(geoKey('abc', 'eye', 20, 2, 10)).not.toBe(geoKey('xyz', 'eye', 20, 2, 10));
+    expect(geoKey('abc', 'eye', 20, 2, 10, 2)).toBe('abc|eye|d20.00|b2|c10|s2');
+    expect(geoKey('abc', 'eye', 20.001, 2, 10, 2)).toBe(geoKey('abc', 'eye', 20.004, 2, 10, 2));
+    expect(geoKey('abc', 'eye', 20, 2, 10, 2)).not.toBe(geoKey('abc', 'eye', 21, 2, 10, 2));
+    expect(geoKey('abc', 'eye', 20, 2, 10, 2)).not.toBe(geoKey('xyz', 'eye', 20, 2, 10, 2));
+    // bevelSegments (LOD) is part of the key
+    expect(geoKey('abc', 'eye', 20, 2, 10, 2)).not.toBe(geoKey('abc', 'eye', 20, 2, 10, 3));
   });
 });

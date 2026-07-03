@@ -7,6 +7,7 @@ import { layerTransforms, pickGranularity, applyOverrides, type AssetProfile, ty
 import { analyzeSvgAsync } from './analysisWorker';
 import { hashSvg } from './hash';
 import { geometryCache, geoKey } from './geometryCache';
+import { chooseLod, detectMobile, type Quality } from './lod';
 import { makeGradientTextures, type GradientTextures } from './gradientTextures';
 import { SCENE_PRESETS, type SceneName } from './scenes';
 import type { MaterialPreset } from './types';
@@ -17,6 +18,11 @@ export interface LayeredSvg3DProps {
   gap?: number;
   /** Scene preset; defaults to the one analyzeSvg recommends. */
   scene?: SceneName;
+  /**
+   * Geometry LOD: 'draft' (default) = low-poly for a 60fps viewport;
+   * 'high' = crisp (for export). Both auto-reduce to fit the triangle budget.
+   */
+  quality?: Quality;
   /** Per-id overrides for sculpting each layer (optional). */
   overrides?: Record<string, { depth?: number; material?: MaterialPreset; color?: string; visible?: boolean }>;
   registerScene?: (scene: THREE.Scene) => void;
@@ -82,20 +88,21 @@ interface BuiltModel {
   svgHash: string;
   depthScale: number;
   curveSegments: number;
+  bevelSegments: number;
   /** Overrides/gap already applied to the meshes (diff base for updates). */
   applied: { overrides?: Overrides; gap: number };
 }
 
-function extrude(shapes: THREE.Shape[], depth: number, bevel: number, depthScale: number, curveSegments: number): THREE.ExtrudeGeometry {
+function extrude(shapes: THREE.Shape[], depth: number, bevel: number, depthScale: number, curveSegments: number, bevelSegments: number): THREE.ExtrudeGeometry {
   const geo = new THREE.ExtrudeGeometry(shapes, {
     depth: depth * depthScale,
     bevelEnabled: true,
     bevelThickness: bevel * depthScale * 0.4,
     bevelSize: bevel * depthScale * 0.4,
-    // Cap segments hard: icon paths have many bezier curves, and curveSegments
-    // multiplies per curve. 10/2 keeps vertices low (60fps) with no visible
-    // loss at icon scale; bevel stays subtle.
-    bevelSegments: 2,
+    // curveSegments / bevelSegments come from the LOD selector (chooseLod):
+    // low in the draft viewport for 60fps, higher for export, and auto-reduced
+    // to fit the triangle budget on complex/mobile assets.
+    bevelSegments,
     curveSegments,
   });
   geo.computeVertexNormals();
@@ -107,8 +114,9 @@ function extrude(shapes: THREE.Shape[], depth: number, bevel: number, depthScale
  * Single parse → all layers share the SVG coordinate space, so they stay
  * aligned; one global transform centers/scales the whole assembly.
  */
-function buildModel(svg: string, gap: number, overrides: Overrides, profile: AssetProfile): BuiltModel {
+function buildModel(svg: string, gap: number, overrides: Overrides, profile: AssetProfile, quality: Quality): BuiltModel {
   const svgHash = hashSvg(svg);
+  const lod = chooseLod(profile, { quality, isMobile: detectMobile() });
   const specById = new Map(profile.layers.map((l) => [l.id, l]));
   // Stacking uses EFFECTIVE depths (sculpt overrides applied) so changing a
   // layer's depth restacks the levels above it instead of overlapping.
@@ -137,7 +145,7 @@ function buildModel(svg: string, gap: number, overrides: Overrides, profile: Ass
     return [s.x, s.y];
   }));
   const depthScale = maxDim * 0.004;
-  const curveSegments = Math.min(profile.recommended.curveSegments, 10);
+  const { curveSegments, bevelSegments } = lod;
 
   // Segment into elements. 'shape' = one element per drawable (icons → captures
   // every part: pupils, rings, teeth…); 'group' = by authored <g id>.
@@ -172,8 +180,8 @@ function buildModel(svg: string, gap: number, overrides: Overrides, profile: Ass
     const material = makeMaterial(ov?.material ?? layer?.material ?? 'default', ov?.color ?? layer?.fill, textures);
     // Geometry Cache: reuse the extruded geometry across re-mounts / depth
     // scrubbing. The mesh borrows a reference; only the cache disposes.
-    const key = geoKey(svgHash, id, depth, bevel, curveSegments);
-    const geometry = geometryCache.acquire(key, () => extrude(shapes, depth, bevel, depthScale, curveSegments));
+    const key = geoKey(svgHash, id, depth, bevel, curveSegments, bevelSegments);
+    const geometry = geometryCache.acquire(key, () => extrude(shapes, depth, bevel, depthScale, curveSegments, bevelSegments));
     const mesh = new THREE.Mesh(geometry, material);
     mesh.name = id;
     mesh.position.z = (zById.get(id) ?? 0) * depthScale;
@@ -198,7 +206,7 @@ function buildModel(svg: string, gap: number, overrides: Overrides, profile: Ass
   root.position.sub(center);
   wrapper.add(root);
   wrapper.scale.setScalar(fit);
-  return { wrapper, byId, profile, svgHash, depthScale, curveSegments, applied: { overrides, gap } };
+  return { wrapper, byId, profile, svgHash, depthScale, curveSegments, bevelSegments, applied: { overrides, gap } };
 }
 
 /**
@@ -224,11 +232,11 @@ function applyGranular(built: BuiltModel, overrides: Overrides, gap: number): vo
     const prevDepth = prev?.depth ?? baseDepth;
     const nextDepth = next?.depth ?? baseDepth;
     if (nextDepth !== prevDepth) {
-      const newKey = geoKey(built.svgHash, id, nextDepth, bevel, built.curveSegments);
+      const newKey = geoKey(built.svgHash, id, nextDepth, bevel, built.curveSegments, built.bevelSegments);
       if (newKey !== entry.geoKey) {
         // Acquire the new geometry (cache hit when scrubbing back to a prior
         // depth), then release the old ref. Never dispose directly.
-        const geo = geometryCache.acquire(newKey, () => extrude(shapes, nextDepth, bevel, built.depthScale, built.curveSegments));
+        const geo = geometryCache.acquire(newKey, () => extrude(shapes, nextDepth, bevel, built.depthScale, built.curveSegments, built.bevelSegments));
         geometryCache.release(entry.geoKey);
         mesh.geometry = geo;
         entry.geoKey = newKey;
@@ -273,7 +281,7 @@ function disposeBuilt(built: BuiltModel | null): void {
  * Layered SVG → 3D renderer: extrudes each `<g id>` layer at its own depth and
  * material (from analyzeSvg or overrides), aligned and z-stacked. Client-only.
  */
-export function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, registerCanvas }: LayeredSvg3DProps) {
+export function LayeredSvg3D({ svg, gap = 0, scene, quality = 'draft', overrides, registerScene, registerCanvas }: LayeredSvg3DProps) {
   // Analysis runs OFF the main thread (Analysis Worker, C6) with a sync
   // fallback; geometry stays on main (SVGLoader needs the DOM) but is deferred
   // past first paint so the canvas/controls stay responsive.
@@ -300,7 +308,7 @@ export function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, re
     let cancelled = false;
     let built: BuiltModel | null = null;
     const t = setTimeout(() => {
-      built = buildModel(svg, editRef.current.gap, editRef.current.overrides, profile);
+      built = buildModel(svg, editRef.current.gap, editRef.current.overrides, profile, quality);
       if (cancelled) {
         disposeBuilt(built);
       } else {
@@ -314,7 +322,7 @@ export function LayeredSvg3D({ svg, gap = 0, scene, overrides, registerScene, re
       disposeBuilt(built);
       builtRef.current = null;
     };
-  }, [svg, profile]);
+  }, [svg, profile, quality]);
 
   // Sculpt edits (overrides/gap) update the existing model in place — only the
   // touched layer is re-extruded; material/visibility/z are O(changed layers).

@@ -86,7 +86,14 @@ export const geometryCache: RefCache<THREE.BufferGeometry> = createRefCache<THRE
 });
 
 /** Stable cache key for an extruded layer geometry (same shapes ⇒ same id per SVG). */
-export function geoKey(svgHash: string, id: string, depth: number, bevel: number, curveSegments: number): string {
+export function geoKey(
+  svgHash: string,
+  id: string,
+  depth: number,
+  bevel: number,
+  curveSegments: number,
+  bevelSegments: number,
+): string {
   // Round depth so slider micro-steps collapse to shared entries.
-  return `${svgHash}|${id}|d${depth.toFixed(2)}|b${bevel}|c${curveSegments}`;
+  return `${svgHash}|${id}|d${depth.toFixed(2)}|b${bevel}|c${curveSegments}|s${bevelSegments}`;
 }
