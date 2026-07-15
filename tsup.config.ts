@@ -13,6 +13,8 @@ export default defineConfig({
   // No shared chunks: the worker bundle must be standalone (duplicating the
   // small pure intelligence layer is fine).
   splitting: false,
-  // Provided by the consumer (single shared copy of Three/React)
-  external: ['react', 'react-dom', 'three', '@react-three/fiber', '@react-three/drei', '3dsvg', 'opentype.js'],
+  // Provided by the consumer (single shared copy of Three/React). The
+  // gltf-transform packages stay external so the consumer's bundler
+  // code-splits the dynamic import (only loaded when a GLB is exported).
+  external: ['react', 'react-dom', 'three', '@react-three/fiber', '@react-three/drei', '3dsvg', 'opentype.js', '@gltf-transform/core', '@gltf-transform/extensions', '@gltf-transform/functions'],
 });

@@ -447,11 +447,13 @@ declare function buildExportGroup(svg: string, overrides?: ExportOverrides, qual
 /**
  * Build a HIGH-LOD version of the layered SVG and download it as .glb — crisp
  * output independent of the (draft) viewport. Off-screen; disposes after.
+ * Compressed by default (weld + quantize); pass `compress: false` to skip.
  */
 declare function exportHighLodGlb(svg: string, filename?: string, opts?: {
     overrides?: ExportOverrides;
     quality?: Quality;
     gap?: number;
+    compress?: boolean;
 }): Promise<void>;
 
 export { type AssetProfile, type BBox, type ExportOverride, type ExportOverrides, type GradientSpec, type GradientStop, type GradientTextures, type Granularity, type LayerRole, LayeredSvg3D, type LayeredSvg3DProps, type LodOptions, type LodResult, PRESETS, type PresetName, type Quality, type RawGroup, type RefCache, SCENE_PRESETS, type SceneName, type ScenePreset, Svg3D, type Svg3DProps, type SvgLayer, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildExportGroup, buildLayerSvgs, canvasToPngBlob, chooseLod, clearAnalysisCache, contains, createRefCache, detectMobile, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportHighLodGlb, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };

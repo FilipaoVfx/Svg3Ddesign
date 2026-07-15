@@ -1172,18 +1172,35 @@ function disposeGroup(g) {
     });
   });
 }
+async function compressGlb(glb) {
+  try {
+    const [{ WebIO }, { ALL_EXTENSIONS }, { weld, quantize }] = await Promise.all([
+      import('@gltf-transform/core'),
+      import('@gltf-transform/extensions'),
+      import('@gltf-transform/functions')
+    ]);
+    const io = new WebIO().registerExtensions(ALL_EXTENSIONS);
+    const doc = await io.readBinary(new Uint8Array(glb));
+    await doc.transform(weld(), quantize());
+    return await io.writeBinary(doc);
+  } catch {
+    return glb;
+  }
+}
 async function exportHighLodGlb(svg, filename = "svg3d.glb", opts) {
   const group = buildExportGroup(svg, opts?.overrides ?? {}, opts?.quality ?? "high", opts?.gap ?? 0);
+  let result;
   try {
     const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
     const exporter = new GLTFExporter();
-    const result = await new Promise((resolve, reject) => {
+    result = await new Promise((resolve, reject) => {
       exporter.parse(group, (g) => resolve(g), (e) => reject(e), { binary: true });
     });
-    downloadBlob(new Blob([result], { type: "model/gltf-binary" }), filename);
   } finally {
     disposeGroup(group);
   }
+  const bytes = opts?.compress === false ? result : await compressGlb(result);
+  downloadBlob(new Blob([bytes], { type: "model/gltf-binary" }), filename);
 }
 
 export { LayeredSvg3D, PRESETS, SCENE_PRESETS, Svg3D, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildExportGroup, buildLayerSvgs, canvasToPngBlob, chooseLod, clearAnalysisCache, contains, createRefCache, detectMobile, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportHighLodGlb, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };

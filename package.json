@@ -1,6 +1,6 @@
 {
   "name": "@filipaovfx/svg3d",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Opinionated SVG/text → 3D React component for CrackingWall, built on 3dsvg.",
   "license": "MIT",
   "type": "module",
@@ -25,24 +25,30 @@
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
+    "@react-three/drei": ">=10",
+    "@react-three/fiber": ">=9",
+    "3dsvg": ">=0.2.0",
     "react": ">=19",
     "react-dom": ">=19",
-    "three": ">=0.160.0",
-    "@react-three/fiber": ">=9",
-    "@react-three/drei": ">=10",
-    "3dsvg": ">=0.2.0"
+    "three": ">=0.160.0"
   },
   "devDependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.5.0",
+    "@types/react": "^19",
+    "@types/three": "^0.183.1",
+    "3dsvg": "^0.2.1",
+    "jsdom": "^29.1.1",
     "react": "^19",
     "react-dom": "^19",
     "three": "^0.183.2",
-    "@react-three/fiber": "^9.5.0",
-    "@react-three/drei": "^10.7.7",
-    "3dsvg": "^0.2.1",
-    "@types/react": "^19",
-    "@types/three": "^0.183.1",
     "tsup": "^8",
-    "vitest": "^2.1.8",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@gltf-transform/core": "^4.4.1",
+    "@gltf-transform/extensions": "^4.4.1",
+    "@gltf-transform/functions": "^4.4.1"
   }
 }

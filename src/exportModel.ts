@@ -136,19 +136,44 @@ function disposeGroup(g: THREE.Group): void {
 }
 
 /**
+ * Shrink a GLB with weld + quantize (KHR_mesh_quantization): pure JS, no WASM,
+ * decodable by Blender/three/Babylon without extra decoders. High-LOD meshes
+ * are vertex-heavy, so 16/10-bit attributes cut the file roughly in half.
+ * Best-effort: any failure returns the original buffer.
+ */
+async function compressGlb(glb: ArrayBuffer): Promise<Uint8Array | ArrayBuffer> {
+  try {
+    const [{ WebIO }, { ALL_EXTENSIONS }, { weld, quantize }] = await Promise.all([
+      import('@gltf-transform/core'),
+      import('@gltf-transform/extensions'),
+      import('@gltf-transform/functions'),
+    ]);
+    const io = new WebIO().registerExtensions(ALL_EXTENSIONS);
+    const doc = await io.readBinary(new Uint8Array(glb));
+    await doc.transform(weld(), quantize());
+    return await io.writeBinary(doc);
+  } catch {
+    return glb; // uncompressed beats a failed download
+  }
+}
+
+/**
  * Build a HIGH-LOD version of the layered SVG and download it as .glb — crisp
  * output independent of the (draft) viewport. Off-screen; disposes after.
+ * Compressed by default (weld + quantize); pass `compress: false` to skip.
  */
-export async function exportHighLodGlb(svg: string, filename = 'svg3d.glb', opts?: { overrides?: ExportOverrides; quality?: Quality; gap?: number }): Promise<void> {
+export async function exportHighLodGlb(svg: string, filename = 'svg3d.glb', opts?: { overrides?: ExportOverrides; quality?: Quality; gap?: number; compress?: boolean }): Promise<void> {
   const group = buildExportGroup(svg, opts?.overrides ?? {}, opts?.quality ?? 'high', opts?.gap ?? 0);
+  let result: ArrayBuffer;
   try {
     const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
     const exporter = new GLTFExporter();
-    const result = await new Promise<ArrayBuffer>((resolve, reject) => {
+    result = await new Promise<ArrayBuffer>((resolve, reject) => {
       exporter.parse(group, (g) => resolve(g as ArrayBuffer), (e) => reject(e), { binary: true });
     });
-    downloadBlob(new Blob([result], { type: 'model/gltf-binary' }), filename);
   } finally {
     disposeGroup(group);
   }
+  const bytes = opts?.compress === false ? result : await compressGlb(result);
+  downloadBlob(new Blob([bytes as BlobPart], { type: 'model/gltf-binary' }), filename);
 }
