@@ -1055,23 +1055,24 @@ async function readSvgFile(file) {
   if (!text.includes("<svg")) throw new Error("That file does not contain valid SVG.");
   return sanitizeSvg(text);
 }
-function flatMaterial(preset, fill) {
+function exportMaterial(preset, fill, textures) {
   const color = new THREE2.Color(fill && /^#?[0-9a-f]{3,8}$/i.test(fill) ? fill : "#c8ccd2");
+  const grad = textures ? { color: new THREE2.Color("#ffffff"), map: textures.map, normalMap: textures.normalMap, normalScale: new THREE2.Vector2(0.6, 0.6) } : {};
   switch (preset) {
     case "metal":
-      return new THREE2.MeshStandardMaterial({ color, metalness: 1, roughness: 0.28 });
+      return new THREE2.MeshStandardMaterial({ color, metalness: 1, roughness: 0.28, ...grad });
     case "chrome":
-      return new THREE2.MeshStandardMaterial({ color: new THREE2.Color("#ffffff"), metalness: 1, roughness: 0.04 });
+      return new THREE2.MeshStandardMaterial({ color: new THREE2.Color("#ffffff"), metalness: 1, roughness: 0.04, ...grad });
     case "gold":
       return new THREE2.MeshStandardMaterial({ color: new THREE2.Color("#ffd24a"), metalness: 1, roughness: 0.2 });
     case "emissive":
-      return new THREE2.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1, roughness: 0.4 });
+      return new THREE2.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1, roughness: 0.4, ...grad });
     case "glass":
-      return new THREE2.MeshStandardMaterial({ color, metalness: 0, roughness: 0.1, transparent: true, opacity: 0.6 });
+      return new THREE2.MeshStandardMaterial({ color, metalness: 0, roughness: 0.1, transparent: true, opacity: 0.6, ...grad });
     case "plastic":
-      return new THREE2.MeshStandardMaterial({ color, metalness: 0, roughness: 0.55 });
+      return new THREE2.MeshStandardMaterial({ color, metalness: 0, roughness: 0.55, ...grad });
     default:
-      return new THREE2.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.45 });
+      return new THREE2.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.45, ...grad });
   }
 }
 function layerIdForNode2(node) {
@@ -1140,7 +1141,8 @@ function buildExportGroup(svg, overrides = {}, quality = "high", gap = 0) {
       curveSegments: lod.curveSegments
     });
     geo.computeVertexNormals();
-    const mesh = new THREE2.Mesh(geo, flatMaterial(ov?.material ?? layer?.material ?? "default", ov?.color ?? layer?.fill));
+    const textures = layer?.gradient && layer.bbox && !ov?.color ? makeGradientTextures(layer.gradient, layer.bbox) : null;
+    const mesh = new THREE2.Mesh(geo, exportMaterial(ov?.material ?? layer?.material ?? "default", ov?.color ?? layer?.fill, textures));
     mesh.name = id;
     mesh.position.z = (zById.get(id) ?? 0) * depthScale;
     root.add(mesh);
@@ -1162,7 +1164,12 @@ function disposeGroup(g) {
   g.traverse((o) => {
     const m = o;
     m.geometry?.dispose();
-    (Array.isArray(m.material) ? m.material : m.material ? [m.material] : []).forEach((x) => x?.dispose());
+    (Array.isArray(m.material) ? m.material : m.material ? [m.material] : []).forEach((x) => {
+      const s = x;
+      s.map?.dispose();
+      s.normalMap?.dispose();
+      x?.dispose();
+    });
   });
 }
 async function exportHighLodGlb(svg, filename = "svg3d.glb", opts) {

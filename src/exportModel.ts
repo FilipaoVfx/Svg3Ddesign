@@ -14,6 +14,7 @@ import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader.js';
 import { analyzeSvg, layerTransforms, applyOverrides, pickGranularity } from './intelligence';
 import { chooseLod, type Quality } from './lod';
 import { downloadBlob } from './export';
+import { makeGradientTextures, type GradientTextures } from './gradientTextures';
 import type { MaterialPreset } from './types';
 
 export interface ExportOverride {
@@ -24,16 +25,22 @@ export interface ExportOverride {
 }
 export type ExportOverrides = Record<string, ExportOverride>;
 
-function flatMaterial(preset: MaterialPreset | undefined, fill?: string): THREE.MeshStandardMaterial {
+function exportMaterial(preset: MaterialPreset | undefined, fill?: string, textures?: GradientTextures | null): THREE.MeshStandardMaterial {
   const color = new THREE.Color(fill && /^#?[0-9a-f]{3,8}$/i.test(fill) ? fill : '#c8ccd2');
+  // Real gradient baked into the GLB: gradient as the color map + Sobel normal
+  // map. GLTFExporter writes the offset/repeat as KHR_texture_transform (the
+  // textures are flipY=false, glTF-native orientation).
+  const grad = textures
+    ? { color: new THREE.Color('#ffffff'), map: textures.map, normalMap: textures.normalMap, normalScale: new THREE.Vector2(0.6, 0.6) }
+    : {};
   switch (preset) {
-    case 'metal': return new THREE.MeshStandardMaterial({ color, metalness: 1, roughness: 0.28 });
-    case 'chrome': return new THREE.MeshStandardMaterial({ color: new THREE.Color('#ffffff'), metalness: 1, roughness: 0.04 });
+    case 'metal': return new THREE.MeshStandardMaterial({ color, metalness: 1, roughness: 0.28, ...grad });
+    case 'chrome': return new THREE.MeshStandardMaterial({ color: new THREE.Color('#ffffff'), metalness: 1, roughness: 0.04, ...grad });
     case 'gold': return new THREE.MeshStandardMaterial({ color: new THREE.Color('#ffd24a'), metalness: 1, roughness: 0.2 });
-    case 'emissive': return new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1, roughness: 0.4 });
-    case 'glass': return new THREE.MeshStandardMaterial({ color, metalness: 0, roughness: 0.1, transparent: true, opacity: 0.6 });
-    case 'plastic': return new THREE.MeshStandardMaterial({ color, metalness: 0, roughness: 0.55 });
-    default: return new THREE.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.45 });
+    case 'emissive': return new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1, roughness: 0.4, ...grad });
+    case 'glass': return new THREE.MeshStandardMaterial({ color, metalness: 0, roughness: 0.1, transparent: true, opacity: 0.6, ...grad });
+    case 'plastic': return new THREE.MeshStandardMaterial({ color, metalness: 0, roughness: 0.55, ...grad });
+    default: return new THREE.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.45, ...grad });
   }
 }
 
@@ -97,7 +104,9 @@ export function buildExportGroup(svg: string, overrides: ExportOverrides = {}, q
       bevelSegments: lod.bevelSegments, curveSegments: lod.curveSegments,
     });
     geo.computeVertexNormals();
-    const mesh = new THREE.Mesh(geo, flatMaterial(ov?.material ?? layer?.material ?? 'default', ov?.color ?? layer?.fill));
+    // Same rule as the viewport: real gradient unless the user overrode color.
+    const textures = layer?.gradient && layer.bbox && !ov?.color ? makeGradientTextures(layer.gradient, layer.bbox) : null;
+    const mesh = new THREE.Mesh(geo, exportMaterial(ov?.material ?? layer?.material ?? 'default', ov?.color ?? layer?.fill, textures));
     mesh.name = id;
     mesh.position.z = (zById.get(id) ?? 0) * depthScale;
     root.add(mesh);
@@ -117,7 +126,12 @@ function disposeGroup(g: THREE.Group): void {
   g.traverse((o) => {
     const m = o as THREE.Mesh;
     m.geometry?.dispose();
-    (Array.isArray(m.material) ? m.material : m.material ? [m.material] : []).forEach((x) => x?.dispose());
+    (Array.isArray(m.material) ? m.material : m.material ? [m.material] : []).forEach((x) => {
+      const s = x as THREE.MeshStandardMaterial;
+      s.map?.dispose();
+      s.normalMap?.dispose();
+      x?.dispose();
+    });
   });
 }
 
