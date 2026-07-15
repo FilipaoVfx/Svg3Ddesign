@@ -19,6 +19,8 @@ export { chooseLod, detectMobile } from './lod';
 export type { Quality, LodOptions, LodResult } from './lod';
 export { buildExportGroup, exportHighLodGlb } from './exportModel';
 export type { ExportOverride, ExportOverrides } from './exportModel';
+export { makeMaterial } from './materials';
+export type { MaterialOptions } from './materials';
 export { SCENE_PRESETS } from './scenes';
 export type { SceneName, ScenePreset } from './scenes';
 export type { Svg3DProps, SVG3DProps, MaterialPreset, PresetName } from './types';

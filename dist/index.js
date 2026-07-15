@@ -722,6 +722,26 @@ function makeGradientTextures(spec, bbox) {
   };
   return { map: wrap(color.cv, true), normalMap: wrap(normal.cv, false) };
 }
+function makeMaterial(preset = "default", fill, textures, opts) {
+  const color = new THREE2.Color(fill && /^#?[0-9a-f]{3,8}$/i.test(fill) ? fill : "#c8ccd2");
+  const grad = textures ? { color: new THREE2.Color("#ffffff"), map: textures.map, normalMap: textures.normalMap, normalScale: new THREE2.Vector2(0.6, 0.6) } : {};
+  switch (preset) {
+    case "glass":
+      return opts?.forExport ? new THREE2.MeshStandardMaterial({ color, metalness: 0, roughness: 0.1, transparent: true, opacity: 0.6, ...grad }) : new THREE2.MeshPhysicalMaterial({ color, transmission: 1, thickness: 1.2, roughness: 0.06, ior: 1.5, transparent: true, metalness: 0, ...grad });
+    case "metal":
+      return new THREE2.MeshStandardMaterial({ color, metalness: 1, roughness: 0.28, ...grad });
+    case "chrome":
+      return new THREE2.MeshStandardMaterial({ color: new THREE2.Color("#ffffff"), metalness: 1, roughness: 0.04, ...grad });
+    case "gold":
+      return new THREE2.MeshStandardMaterial({ color: new THREE2.Color("#ffd24a"), metalness: 1, roughness: 0.2 });
+    case "emissive":
+      return new THREE2.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.4, roughness: 0.4, ...grad });
+    case "plastic":
+      return new THREE2.MeshStandardMaterial({ color, metalness: 0, roughness: 0.55, ...grad });
+    default:
+      return new THREE2.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.45, ...grad });
+  }
+}
 
 // src/scenes.ts
 var SCENE_PRESETS = {
@@ -758,26 +778,6 @@ var SCENE_PRESETS = {
     environment: "neutral"
   }
 };
-function makeMaterial(preset, fill, textures) {
-  const color = new THREE2.Color(fill && /^#?[0-9a-f]{3,8}$/i.test(fill) ? fill : "#c8ccd2");
-  const grad = textures ? { color: new THREE2.Color("#ffffff"), map: textures.map, normalMap: textures.normalMap, normalScale: new THREE2.Vector2(0.6, 0.6) } : {};
-  switch (preset) {
-    case "glass":
-      return new THREE2.MeshPhysicalMaterial({ color, transmission: 1, thickness: 1.2, roughness: 0.06, ior: 1.5, transparent: true, metalness: 0, ...grad });
-    case "metal":
-      return new THREE2.MeshStandardMaterial({ color, metalness: 1, roughness: 0.28, ...grad });
-    case "chrome":
-      return new THREE2.MeshStandardMaterial({ color: new THREE2.Color("#ffffff"), metalness: 1, roughness: 0.04, ...grad });
-    case "gold":
-      return new THREE2.MeshStandardMaterial({ color: new THREE2.Color("#ffd24a"), metalness: 1, roughness: 0.2 });
-    case "emissive":
-      return new THREE2.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.4, roughness: 0.4, ...grad });
-    case "plastic":
-      return new THREE2.MeshStandardMaterial({ color, metalness: 0, roughness: 0.55, ...grad });
-    default:
-      return new THREE2.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.45, ...grad });
-  }
-}
 function layerIdForNode(node) {
   let id = "";
   let n = node;
@@ -1055,26 +1055,6 @@ async function readSvgFile(file) {
   if (!text.includes("<svg")) throw new Error("That file does not contain valid SVG.");
   return sanitizeSvg(text);
 }
-function exportMaterial(preset, fill, textures) {
-  const color = new THREE2.Color(fill && /^#?[0-9a-f]{3,8}$/i.test(fill) ? fill : "#c8ccd2");
-  const grad = textures ? { color: new THREE2.Color("#ffffff"), map: textures.map, normalMap: textures.normalMap, normalScale: new THREE2.Vector2(0.6, 0.6) } : {};
-  switch (preset) {
-    case "metal":
-      return new THREE2.MeshStandardMaterial({ color, metalness: 1, roughness: 0.28, ...grad });
-    case "chrome":
-      return new THREE2.MeshStandardMaterial({ color: new THREE2.Color("#ffffff"), metalness: 1, roughness: 0.04, ...grad });
-    case "gold":
-      return new THREE2.MeshStandardMaterial({ color: new THREE2.Color("#ffd24a"), metalness: 1, roughness: 0.2 });
-    case "emissive":
-      return new THREE2.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1, roughness: 0.4, ...grad });
-    case "glass":
-      return new THREE2.MeshStandardMaterial({ color, metalness: 0, roughness: 0.1, transparent: true, opacity: 0.6, ...grad });
-    case "plastic":
-      return new THREE2.MeshStandardMaterial({ color, metalness: 0, roughness: 0.55, ...grad });
-    default:
-      return new THREE2.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.45, ...grad });
-  }
-}
 function layerIdForNode2(node) {
   let id = "", n = node;
   while (n) {
@@ -1142,7 +1122,7 @@ function buildExportGroup(svg, overrides = {}, quality = "high", gap = 0) {
     });
     geo.computeVertexNormals();
     const textures = layer?.gradient && layer.bbox && !ov?.color ? makeGradientTextures(layer.gradient, layer.bbox) : null;
-    const mesh = new THREE2.Mesh(geo, exportMaterial(ov?.material ?? layer?.material ?? "default", ov?.color ?? layer?.fill, textures));
+    const mesh = new THREE2.Mesh(geo, makeMaterial(ov?.material ?? layer?.material ?? "default", ov?.color ?? layer?.fill, textures, { forExport: true }));
     mesh.name = id;
     mesh.position.z = (zById.get(id) ?? 0) * depthScale;
     root.add(mesh);
@@ -1203,6 +1183,6 @@ async function exportHighLodGlb(svg, filename = "svg3d.glb", opts) {
   downloadBlob(new Blob([bytes], { type: "model/gltf-binary" }), filename);
 }
 
-export { LayeredSvg3D, PRESETS, SCENE_PRESETS, Svg3D, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildExportGroup, buildLayerSvgs, canvasToPngBlob, chooseLod, clearAnalysisCache, contains, createRefCache, detectMobile, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportHighLodGlb, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
+export { LayeredSvg3D, PRESETS, SCENE_PRESETS, Svg3D, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildExportGroup, buildLayerSvgs, canvasToPngBlob, chooseLod, clearAnalysisCache, contains, createRefCache, detectMobile, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportHighLodGlb, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, makeMaterial, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

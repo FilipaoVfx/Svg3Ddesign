@@ -456,4 +456,24 @@ declare function exportHighLodGlb(svg: string, filename?: string, opts?: {
     compress?: boolean;
 }): Promise<void>;
 
-export { type AssetProfile, type BBox, type ExportOverride, type ExportOverrides, type GradientSpec, type GradientStop, type GradientTextures, type Granularity, type LayerRole, LayeredSvg3D, type LayeredSvg3DProps, type LodOptions, type LodResult, PRESETS, type PresetName, type Quality, type RawGroup, type RefCache, SCENE_PRESETS, type SceneName, type ScenePreset, Svg3D, type Svg3DProps, type SvgLayer, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildExportGroup, buildLayerSvgs, canvasToPngBlob, chooseLod, clearAnalysisCache, contains, createRefCache, detectMobile, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportHighLodGlb, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
+/**
+ * Shared material factory — single source of truth for the preset → material
+ * mapping, used by both the viewport (LayeredSvg3D) and the high-LOD GLB
+ * export (exportModel), so the two can't drift apart.
+ *
+ * When gradient textures exist (Module 5), the REAL gradient becomes the color
+ * map (base color → white to avoid tinting) and its luminance-derived normal
+ * map adds relief shading at ~zero geometry cost (C7).
+ */
+
+interface MaterialOptions {
+    /**
+     * Export-safe variant: glass becomes a plain standard material (transparent
+     * opacity) instead of physical transmission, for maximum GLB viewer
+     * compatibility (transmission renders black in env-less viewers).
+     */
+    forExport?: boolean;
+}
+declare function makeMaterial(preset?: MaterialPreset, fill?: string, textures?: GradientTextures | null, opts?: MaterialOptions): THREE.Material;
+
+export { type AssetProfile, type BBox, type ExportOverride, type ExportOverrides, type GradientSpec, type GradientStop, type GradientTextures, type Granularity, type LayerRole, LayeredSvg3D, type LayeredSvg3DProps, type LodOptions, type LodResult, type MaterialOptions, PRESETS, type PresetName, type Quality, type RawGroup, type RefCache, SCENE_PRESETS, type SceneName, type ScenePreset, Svg3D, type Svg3DProps, type SvgLayer, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildExportGroup, buildLayerSvgs, canvasToPngBlob, chooseLod, clearAnalysisCache, contains, createRefCache, detectMobile, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportHighLodGlb, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, makeMaterial, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
