@@ -1055,7 +1055,130 @@ async function readSvgFile(file) {
   if (!text.includes("<svg")) throw new Error("That file does not contain valid SVG.");
   return sanitizeSvg(text);
 }
+function flatMaterial(preset, fill) {
+  const color = new THREE2.Color(fill && /^#?[0-9a-f]{3,8}$/i.test(fill) ? fill : "#c8ccd2");
+  switch (preset) {
+    case "metal":
+      return new THREE2.MeshStandardMaterial({ color, metalness: 1, roughness: 0.28 });
+    case "chrome":
+      return new THREE2.MeshStandardMaterial({ color: new THREE2.Color("#ffffff"), metalness: 1, roughness: 0.04 });
+    case "gold":
+      return new THREE2.MeshStandardMaterial({ color: new THREE2.Color("#ffd24a"), metalness: 1, roughness: 0.2 });
+    case "emissive":
+      return new THREE2.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1, roughness: 0.4 });
+    case "glass":
+      return new THREE2.MeshStandardMaterial({ color, metalness: 0, roughness: 0.1, transparent: true, opacity: 0.6 });
+    case "plastic":
+      return new THREE2.MeshStandardMaterial({ color, metalness: 0, roughness: 0.55 });
+    default:
+      return new THREE2.MeshStandardMaterial({ color, metalness: 0.1, roughness: 0.45 });
+  }
+}
+function layerIdForNode2(node) {
+  let id = "", n = node;
+  while (n) {
+    if (n.tagName?.toLowerCase() === "g" && n.getAttribute("id")) id = n.getAttribute("id") || id;
+    n = n.parentElement;
+  }
+  return id;
+}
+function buildExportGroup(svg, overrides = {}, quality = "high", gap = 0) {
+  const profile = analyzeSvg(svg);
+  const lod = chooseLod(profile, { quality });
+  const specById = new Map(profile.layers.map((l) => [l.id, l]));
+  const zById = new Map(layerTransforms(applyOverrides(profile, overrides), gap).map((t) => [t.id, t.z]));
+  const mode = pickGranularity(svg);
+  const parsed = new SVGLoader().parse(svg);
+  const isHidden = (node) => {
+    let n = node;
+    while (n) {
+      const t = n.tagName?.toLowerCase();
+      if (t === "defs" || t === "mask" || t === "clippath") return true;
+      n = n.parentElement;
+    }
+    return false;
+  };
+  const renderPaths = parsed.paths.filter((p) => !isHidden(p.userData?.node ?? null));
+  const maxDim = Math.max(1, ...renderPaths.flatMap((p) => {
+    const box2 = new THREE2.Box2();
+    p.subPaths.forEach((sp) => sp.getPoints().forEach((pt) => box2.expandByPoint(pt)));
+    const s = new THREE2.Vector2();
+    box2.getSize(s);
+    return [s.x, s.y];
+  }));
+  const depthScale = maxDim * 4e-3;
+  const elements = [];
+  if (mode === "shape") {
+    renderPaths.forEach((path, i) => {
+      const node = path.userData?.node ?? null;
+      elements.push({ id: node?.id || `shape_${i}`, shapes: SVGLoader.createShapes(path) });
+    });
+  } else {
+    const byLayer = /* @__PURE__ */ new Map();
+    for (const path of renderPaths) {
+      const id = layerIdForNode2(path.userData?.node ?? null) || "root";
+      const arr = byLayer.get(id) ?? [];
+      arr.push(...SVGLoader.createShapes(path));
+      byLayer.set(id, arr);
+    }
+    for (const [id, shapes] of byLayer) elements.push({ id, shapes });
+  }
+  const root = new THREE2.Group();
+  for (const { id, shapes } of elements) {
+    if (!shapes.length) continue;
+    const layer = specById.get(id);
+    const ov = overrides?.[id];
+    if (ov?.visible === false) continue;
+    const depth = (ov?.depth ?? layer?.depth ?? 20) * depthScale;
+    const bevel = (layer?.bevel ?? 2) * depthScale * 0.4;
+    const geo = new THREE2.ExtrudeGeometry(shapes, {
+      depth,
+      bevelEnabled: true,
+      bevelThickness: bevel,
+      bevelSize: bevel,
+      bevelSegments: lod.bevelSegments,
+      curveSegments: lod.curveSegments
+    });
+    geo.computeVertexNormals();
+    const mesh = new THREE2.Mesh(geo, flatMaterial(ov?.material ?? layer?.material ?? "default", ov?.color ?? layer?.fill));
+    mesh.name = id;
+    mesh.position.z = (zById.get(id) ?? 0) * depthScale;
+    root.add(mesh);
+  }
+  root.scale.y = -1;
+  const box = new THREE2.Box3().setFromObject(root);
+  const center = new THREE2.Vector3();
+  const size = new THREE2.Vector3();
+  box.getCenter(center);
+  box.getSize(size);
+  const fit = 4 / (Math.max(size.x, size.y, size.z) || 1);
+  const wrapper = new THREE2.Group();
+  root.position.sub(center);
+  wrapper.add(root);
+  wrapper.scale.setScalar(fit);
+  return wrapper;
+}
+function disposeGroup(g) {
+  g.traverse((o) => {
+    const m = o;
+    m.geometry?.dispose();
+    (Array.isArray(m.material) ? m.material : m.material ? [m.material] : []).forEach((x) => x?.dispose());
+  });
+}
+async function exportHighLodGlb(svg, filename = "svg3d.glb", opts) {
+  const group = buildExportGroup(svg, opts?.overrides ?? {}, opts?.quality ?? "high", opts?.gap ?? 0);
+  try {
+    const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
+    const exporter = new GLTFExporter();
+    const result = await new Promise((resolve, reject) => {
+      exporter.parse(group, (g) => resolve(g), (e) => reject(e), { binary: true });
+    });
+    downloadBlob(new Blob([result], { type: "model/gltf-binary" }), filename);
+  } finally {
+    disposeGroup(group);
+  }
+}
 
-export { LayeredSvg3D, PRESETS, SCENE_PRESETS, Svg3D, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildLayerSvgs, canvasToPngBlob, chooseLod, clearAnalysisCache, contains, createRefCache, detectMobile, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
+export { LayeredSvg3D, PRESETS, SCENE_PRESETS, Svg3D, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildExportGroup, buildLayerSvgs, canvasToPngBlob, chooseLod, clearAnalysisCache, contains, createRefCache, detectMobile, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportHighLodGlb, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

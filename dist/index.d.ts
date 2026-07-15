@@ -420,4 +420,38 @@ declare const geometryCache: RefCache<THREE.BufferGeometry>;
 /** Stable cache key for an extruded layer geometry (same shapes ⇒ same id per SVG). */
 declare function geoKey(svgHash: string, id: string, depth: number, bevel: number, curveSegments: number, bevelSegments: number): string;
 
-export { type AssetProfile, type BBox, type GradientSpec, type GradientStop, type GradientTextures, type Granularity, type LayerRole, LayeredSvg3D, type LayeredSvg3DProps, type LodOptions, type LodResult, PRESETS, type PresetName, type Quality, type RawGroup, type RefCache, SCENE_PRESETS, type SceneName, type ScenePreset, Svg3D, type Svg3DProps, type SvgLayer, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildLayerSvgs, canvasToPngBlob, chooseLod, clearAnalysisCache, contains, createRefCache, detectMobile, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
+/**
+ * High-LOD export (PRD v2.1, Phase 3 — export high-LOD).
+ *
+ * The viewport renders at 'draft' LOD for 60fps. This builds a headless,
+ * one-off THREE.Group at 'high' LOD (crisp curves/bevels) purely for the GLB
+ * download, then exports and disposes it — the interactive scene is never
+ * touched. GLB carries geometry only (flat per-layer material colors, no
+ * gradient textures) to keep the file lean and portable.
+ *
+ * Needs the DOM (SVGLoader) → browser only.
+ */
+
+interface ExportOverride {
+    depth?: number;
+    material?: MaterialPreset;
+    color?: string;
+    visible?: boolean;
+}
+type ExportOverrides = Record<string, ExportOverride>;
+/**
+ * Headless build of the layered model at a chosen LOD. Caller owns disposal.
+ * Mirrors the viewport builder's geometry/stacking, minus cache & textures.
+ */
+declare function buildExportGroup(svg: string, overrides?: ExportOverrides, quality?: Quality, gap?: number): THREE.Group;
+/**
+ * Build a HIGH-LOD version of the layered SVG and download it as .glb — crisp
+ * output independent of the (draft) viewport. Off-screen; disposes after.
+ */
+declare function exportHighLodGlb(svg: string, filename?: string, opts?: {
+    overrides?: ExportOverrides;
+    quality?: Quality;
+    gap?: number;
+}): Promise<void>;
+
+export { type AssetProfile, type BBox, type ExportOverride, type ExportOverrides, type GradientSpec, type GradientStop, type GradientTextures, type Granularity, type LayerRole, LayeredSvg3D, type LayeredSvg3DProps, type LodOptions, type LodResult, PRESETS, type PresetName, type Quality, type RawGroup, type RefCache, SCENE_PRESETS, type SceneName, type ScenePreset, Svg3D, type Svg3DProps, type SvgLayer, TRIANGLE_BUDGET, VERTEX_BUDGET, analyzeSvg, analyzeSvgAsync, analyzeSvgCached, applyOverrides, assignLevels, buildExportGroup, buildLayerSvgs, canvasToPngBlob, chooseLod, clearAnalysisCache, contains, createRefCache, detectMobile, disposeAnalysisWorker, downloadBlob, estimateTriangles, estimateVertices, exportCanvasPng, exportHighLodGlb, exportSceneGlb, extractGradient, extractShapes, geoKey, geometryCache, hashSvg, layerTransforms, makeGradientTextures, overlaps, pathBBox, pickGranularity, readSvgFile, resolveFillColor, sanitizeSvg, shapeBBox, topLevelGroups };
